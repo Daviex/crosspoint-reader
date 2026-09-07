@@ -212,4 +212,56 @@ TEST(KOReaderPosition, ImageBetweenDirectTextNodesPreservesExactRoundTrips) {
   }
 }
 
+TEST(KOReaderPosition, DirectTextNodesRoundTripAfterLeadingConsecutiveAndHiddenChildren) {
+  struct Fixture {
+    const char* body;
+    uint32_t visibleLength;
+  };
+  const Fixture fixtures[] = {
+      {"<p><em>alpha</em> beta</p>", 10},
+      {"<p>ab<em>x</em><strong>y</strong>cd</p>", 6},
+      {"a<div>b</div><ul><li>c</li><li>d</li></ul>e", 5},
+      {"<p>ab<script>hidden</script>cd</p>", 4},
+      {"<p><img/><img/>ab<img/><img/>cd</p>", 4},
+      {"<div><p><em>é猫</em><strong>😀</strong>e&#x301;z</p></div>", 6},
+      {"<p>a<style>hidden</style><script>hidden</script>é&#x732B;😀</p>", 4},
+      {"<p><em>ab</em></p>cd", 4},
+  };
+  GfxRenderer renderer;
+  for (const auto& fixture : fixtures) {
+    SCOPED_TRACE(fixture.body);
+    for (size_t chunkSize = 1; chunkSize <= 17; ++chunkSize) {
+      SCOPED_TRACE(chunkSize);
+      const auto epub = makeEpub(std::string("<html><body>") + fixture.body + "</body></html>", chunkSize);
+      for (uint32_t offset = 0; offset <= fixture.visibleLength; ++offset) {
+        SCOPED_TRACE(offset);
+        const auto saved = ProgressMapper::toSavedProgress(epub, positionAt(offset));
+        SCOPED_TRACE(saved.xpath);
+        const auto restored = ProgressMapper::toCrossPoint(epub, saved, renderer);
+        ASSERT_TRUE(restored.hasVisibleTextOffset);
+        EXPECT_EQ(restored.visibleTextOffset, offset);
+      }
+    }
+  }
+}
+
+TEST(KOReaderPosition, ElementAnchorsRemainAtElementStartBeforeLeadingInlineText) {
+  const auto epub =
+      makeEpub("<html><body>xy<p>first</p><div><p><em>abc</em>def</p></div><img src='x.png'/></body></html>", 1);
+  GfxRenderer renderer;
+  for (const std::string anchor : {"/p[2]", "/div[1]/p[1].0"}) {
+    SCOPED_TRACE(anchor);
+    const SavedProgressPosition saved{"/body/DocFragment[1]/body" + anchor, 0.5f};
+    const auto restored = ProgressMapper::toCrossPoint(epub, saved, renderer);
+    ASSERT_TRUE(restored.hasVisibleTextOffset);
+    EXPECT_EQ(restored.visibleTextOffset, 7u);
+  }
+  const SavedProgressPosition image{"/body/DocFragment[1]/body/img[1].0", 0.5f};
+  EXPECT_EQ(ProgressMapper::toCrossPoint(epub, image, renderer).visibleTextOffset, 13u);
+  const SavedProgressPosition text{"/body/DocFragment[1]/body/div[1]/p[1]/text().0", 0.5f};
+  const auto restoredText = ProgressMapper::toCrossPoint(epub, text, renderer);
+  ASSERT_TRUE(restoredText.hasVisibleTextOffset);
+  EXPECT_EQ(restoredText.visibleTextOffset, 10u);
+}
+
 }  // namespace
