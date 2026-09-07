@@ -143,6 +143,35 @@ TEST_F(EndOfBookOptionsTest, ShortTitleAndHomeStopWhileNewLongSelectionGetsIniti
   EXPECT_FALSE(tick(10000));
 }
 
+TEST_F(EndOfBookOptionsTest, SingleOversizedCodepointStaysIdleAndAnotherSelectionCanScroll) {
+  for (const std::string glyph : {"W", "\u754c"}) {
+    SCOPED_TRACE(glyph);
+    marquee_test::now = 100;
+    // Four pixels remain after padding; the mock measures each codepoint at eight.
+    marquee_test::screen.content.width = 20;
+    open({glyph, "Long title"});
+    EXPECT_EQ(label(), glyph);
+    for (const uint32_t now : {1600U, 3100U, 6100U}) {
+      EXPECT_FALSE(tick(now));
+      EXPECT_EQ(label(), glyph);
+    }
+    marquee_test::now = 7000;
+    reader->renderMenu();
+    EXPECT_FALSE(tick(8500));
+    EXPECT_EQ(label(), glyph);
+
+    next();
+    EXPECT_EQ(label(), "L");
+    EXPECT_FALSE(tick(9999));
+    ASSERT_TRUE(tick(10000));
+    EXPECT_EQ(label(), "o");
+    next();  // Home
+    next();  // Return to the oversized glyph.
+    EXPECT_EQ(label(), glyph);
+    EXPECT_FALSE(tick(11500));
+  }
+}
+
 TEST_F(EndOfBookOptionsTest, DeadlineDoesNotConsumeLongBackOrReplaceNavigationActions) {
   open({"A sufficiently long title with an ending 123"});
   marquee_test::now = 1600;

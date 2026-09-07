@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "components/UiAppHost.h"
@@ -53,7 +54,7 @@ class EndOfBookOptions : private UiAppHost {
   static void listScreen(UiScreen& screen, void* user);
   static void onRowEvent(const freeink::ui::ActionEvent& event, void* user);
   void buildListScreen(UiScreen& screen);
-  bool buildMarqueeLabel(const freeink::ui::DrawTarget& target, const std::string& title, size_t startByte,
+  bool buildMarqueeLabel(const freeink::ui::DrawTarget& target, std::string_view title, size_t startByte,
                          int16_t maxWidth, const freeink::ui::TextStyle& style);
 
   GfxRenderer& renderer;
