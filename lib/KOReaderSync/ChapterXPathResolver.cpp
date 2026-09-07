@@ -350,13 +350,16 @@ class XPathVisibleOffsetResolver final : public Print {
       return;
     }
 
-    parentStates.reserve(16);
-    textNodeStates.reserve(16);
-    path.reserve(16);
+    parentStates.reserve(MAX_DEPTH + 1);
+    textNodeStates.reserve(MAX_DEPTH + 1);
+    path.reserve(MAX_DEPTH);
     XML_SetUserData(parser, this);
     XML_SetElementHandler(parser, &XPathVisibleOffsetResolver::startElement, &XPathVisibleOffsetResolver::endElement);
     XML_SetCharacterDataHandler(parser, &XPathVisibleOffsetResolver::characterData);
     XML_SetDefaultHandlerExpand(parser, &XPathVisibleOffsetResolver::defaultHandlerExpand);
+    XML_SetCommentHandler(parser, &XPathVisibleOffsetResolver::comment);
+    XML_SetProcessingInstructionHandler(parser, &XPathVisibleOffsetResolver::processingInstruction);
+    XML_SetCdataSectionHandler(parser, &XPathVisibleOffsetResolver::startCdata, nullptr);
   }
 
   ~XPathVisibleOffsetResolver() override { destroyXmlParser(parser); }
@@ -405,6 +408,9 @@ class XPathVisibleOffsetResolver final : public Print {
   int spineIndex = 0;
 
  private:
+  // Match the maximum ancestry depth understood by ProgressMapper.
+  static constexpr size_t MAX_DEPTH = 16;
+
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char**) {
     static_cast<XPathVisibleOffsetResolver*>(userData)->onStartElement(name);
   }
@@ -415,6 +421,33 @@ class XPathVisibleOffsetResolver final : public Print {
 
   static void XMLCALL characterData(void* userData, const XML_Char* data, const int len) {
     static_cast<XPathVisibleOffsetResolver*>(userData)->onCharacterData(data, len);
+  }
+
+  static void XMLCALL comment(void* userData, const XML_Char*) {
+    static_cast<XPathVisibleOffsetResolver*>(userData)->onUnsupportedMarkup();
+  }
+
+  static void XMLCALL processingInstruction(void* userData, const XML_Char*, const XML_Char*) {
+    static_cast<XPathVisibleOffsetResolver*>(userData)->onUnsupportedMarkup();
+  }
+
+  static void XMLCALL startCdata(void* userData) {
+    static_cast<XPathVisibleOffsetResolver*>(userData)->onUnsupportedMarkup();
+  }
+
+  void stopWithoutMatch() {
+    parseOk = false;
+    stopped = true;
+    XML_StopParser(parser, XML_FALSE);
+  }
+
+  void onUnsupportedMarkup() {
+    if (!insideBody) return;
+    // The existing inbound mapper cannot reliably distinguish text nodes
+    // around comments, processing instructions or CDATA. Keep its legacy
+    // paragraph/page fallback instead of exporting an incompatible anchor.
+    LOG_DBG("KOX", "Exact XPath fallback: unsupported body XML markup");
+    stopWithoutMatch();
   }
 
   static void XMLCALL defaultHandlerExpand(void* userData, const XML_Char* data, const int len) {
@@ -447,6 +480,11 @@ class XPathVisibleOffsetResolver final : public Print {
 
     if (!textNodeStates.empty()) {
       textNodeStates.back().open = false;
+    }
+    if (path.size() >= MAX_DEPTH) {
+      LOG_DBG("KOX", "Exact XPath fallback: ancestry exceeds %zu elements", MAX_DEPTH);
+      stopWithoutMatch();
+      return;
     }
     const int siblingIndex = parentStates.back().nextIndex(name);
     path.push_back({name, siblingIndex});
@@ -776,7 +814,11 @@ std::string ChapterXPathResolver::findXPathForVisibleTextOffset(const std::share
   // Keep the parser and its per-depth state off the reader task's small stack.
   // One chapter is streamed once, stopping as soon as the target is resolved.
   auto resolver = makeUniqueNoThrow<XPathVisibleOffsetResolver>(visibleTextOffset);
-  if (!resolver || !resolver->ok()) {
+  if (!resolver) {
+    LOG_ERR("KOX", "OOM: visible-offset XPath resolver");
+    return "";
+  }
+  if (!resolver->ok()) {
     return "";
   }
 
