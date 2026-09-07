@@ -167,14 +167,49 @@ TEST(KOReaderPosition, ExactResolverLeavesEmptyAndMalformedChaptersToFallbacks) 
   EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(malformed, 0, 1).empty());
 }
 
-TEST(KOReaderPosition, HiddenNestingCannotWrapTheVisibleDepthCounter) {
+TEST(KOReaderPosition, ExcessiveNestingLeavesTheLegacyFallbackAvailable) {
   std::string chapter = "<html><body><script>";
   for (int depth = 0; depth < 260; ++depth) chapter += "<span>";
   chapter += "hidden";
   for (int depth = 0; depth < 260; ++depth) chapter += "</span>";
   chapter += "</script><p>visible</p></body></html>";
-  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(makeEpub(chapter, 1), 0, 0),
-            "/body/DocFragment[1]/body/p[1]/text()[1].0");
+  const auto epub = makeEpub(chapter, 1);
+  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 0).empty());
+  auto position = positionAt(0);
+  const auto saved = ProgressMapper::toSavedProgress(epub, position);
+  position.hasVisibleTextOffset = false;
+  EXPECT_EQ(saved.xpath, ProgressMapper::toSavedProgress(epub, position).xpath);
+}
+
+TEST(KOReaderPosition, UnsupportedBodyXmlUsesLegacyFallbackAfterTheMarkup) {
+  for (const std::string markup : {"<!-- comment -->", "<?target data?>", "<![CDATA[x]]>"}) {
+    SCOPED_TRACE(markup);
+    const auto epub = makeEpub("<html><body><p>a" + markup + "b</p></body></html>", 1);
+    EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 1).empty());
+    auto position = positionAt(1);
+    const auto saved = ProgressMapper::toSavedProgress(epub, position);
+    position.hasVisibleTextOffset = false;
+    EXPECT_EQ(saved.xpath, ProgressMapper::toSavedProgress(epub, position).xpath);
+  }
+}
+
+TEST(KOReaderPosition, UnsupportedMarkupDoesNotDiscardAnEarlierExactAnchor) {
+  const auto epub = makeEpub("<html><head><!-- metadata --></head><body><p>ab<!-- later -->cd</p></body></html>", 1);
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 1),
+            "/body/DocFragment[1]/body/p[1]/text()[1].1");
+}
+
+TEST(KOReaderPosition, ImageBetweenDirectTextNodesPreservesExactRoundTrips) {
+  const auto epub = makeEpub("<html><body><p>ab<img src='images/cover.png'/>cd</p></body></html>", 1);
+  EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(2)).xpath, "/body/DocFragment[1]/body/p[1]/text()[2].0");
+  GfxRenderer renderer;
+  for (uint32_t offset = 0; offset <= 4; ++offset) {
+    SCOPED_TRACE(offset);
+    const auto saved = ProgressMapper::toSavedProgress(epub, positionAt(offset));
+    const auto restored = ProgressMapper::toCrossPoint(epub, saved, renderer);
+    ASSERT_TRUE(restored.hasVisibleTextOffset);
+    EXPECT_EQ(restored.visibleTextOffset, offset);
+  }
 }
 
 }  // namespace
