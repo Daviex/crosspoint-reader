@@ -9,23 +9,24 @@
 #include "KOReaderDocumentId.h"
 
 namespace {
+constexpr bool CAN_WRAP_NOTHROW = DOCUMENT_ID_STACK_WRAP_NOTHROW != 0;
 bool failScratchAllocation = false;
 size_t scratchAllocationCalls = 0;
 }  // namespace
 
-// Exercise the production Memory.h helper, replacing only the allocation API
-// it calls. Other allocations, including fixture/OpenSSL storage, remain real.
-void* operator new[](const size_t size, const std::nothrow_t&) noexcept {
+#if DOCUMENT_ID_STACK_WRAP_NOTHROW
+// The Linux 64-bit Itanium ABI symbol for operator new[](size_t, nothrow_t).
+// The linker redirects only this overload; successful allocations and delete[]
+// continue to use the original runtime. Memory.h itself is compiled unchanged.
+extern "C" void* __real__ZnamRKSt9nothrow_t(size_t, const std::nothrow_t&) noexcept;
+extern "C" void* __wrap__ZnamRKSt9nothrow_t(const size_t size, const std::nothrow_t& tag) noexcept {
   if (size == 1024) {
     ++scratchAllocationCalls;
     if (failScratchAllocation) return nullptr;
   }
-  try {
-    return ::operator new[](size);
-  } catch (...) {
-    return nullptr;
-  }
+  return __real__ZnamRKSt9nothrow_t(size, tag);
 }
+#endif
 
 namespace {
 
@@ -62,17 +63,22 @@ TEST_F(DocumentIdStack, PreservesIndependentPartialMd5VectorsAcrossSampleBoundar
   }
 }
 
-TEST_F(DocumentIdStack, SamplesAllOfficialOffsetsWithOneScratchAllocation) {
+TEST_F(DocumentIdStack, SamplesAllOfficialOffsets) {
   auto& fixture = documentIdFixture::state;
   fixture.fileSize = 1073742000;
   ASSERT_FALSE(KOReaderDocumentId::calculate("/fixture/book.epub").empty());
-  EXPECT_EQ(scratchAllocationCalls, 1U);
+  if (CAN_WRAP_NOTHROW) {
+    EXPECT_EQ(scratchAllocationCalls, 1U);
+  }
   EXPECT_EQ(fixture.seeks, (std::vector<size_t>{0, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216,
                                                 67108864, 268435456, 1073741824}));
   EXPECT_EQ(fixture.hashFeedSizes.back(), 176U);
 }
 
 TEST_F(DocumentIdStack, AllocationFailureReturnsNoHashAndClosesTheFile) {
+  if (!CAN_WRAP_NOTHROW) {
+    GTEST_SKIP() << "Nothrow array allocation wrapping is unavailable or disabled";
+  }
   auto& fixture = documentIdFixture::state;
   fixture.fileSize = 4097;
   failScratchAllocation = true;
@@ -90,7 +96,9 @@ TEST_F(DocumentIdStack, OpenFailureDoesNotAllocateScratchStorage) {
   fixture.fileSize = 1024;
   fixture.openSucceeds = false;
   EXPECT_TRUE(KOReaderDocumentId::calculate("/fixture/missing.epub").empty());
-  EXPECT_EQ(scratchAllocationCalls, 0U);
+  if (CAN_WRAP_NOTHROW) {
+    EXPECT_EQ(scratchAllocationCalls, 0U);
+  }
   EXPECT_TRUE(fixture.reads.empty());
   EXPECT_EQ(fixture.closedFiles, 0);
 }
@@ -100,7 +108,9 @@ TEST_F(DocumentIdStack, FilenameHashingDoesNotDependOnScratchStorage) {
   EXPECT_EQ(KOReaderDocumentId::calculateFromFilename("/one/book.epub"), "03053ffc045564439ff7f2cabb3b58c5");
   EXPECT_EQ(KOReaderDocumentId::calculateFromFilename("/another/book.epub"), "03053ffc045564439ff7f2cabb3b58c5");
   EXPECT_TRUE(KOReaderDocumentId::calculateFromFilename("/directory/").empty());
-  EXPECT_EQ(scratchAllocationCalls, 0U);
+  if (CAN_WRAP_NOTHROW) {
+    EXPECT_EQ(scratchAllocationCalls, 0U);
+  }
 }
 
 }  // namespace
