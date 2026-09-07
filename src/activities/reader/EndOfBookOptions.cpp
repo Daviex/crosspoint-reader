@@ -30,7 +30,7 @@ uint32_t marqueeDeadline(const uint32_t now, const uint32_t pause) {
   return deadline == 0 ? 1 : deadline;  // Zero disables the timer.
 }
 
-size_t nextUtf8Boundary(const std::string& text, const size_t byte) {
+size_t nextUtf8Boundary(const std::string_view text, const size_t byte) {
   if (byte >= text.size()) return text.size();
   size_t next = byte + 1;
   while (next < text.size() && (static_cast<unsigned char>(text[next]) & 0xC0) == 0x80) ++next;
@@ -177,7 +177,7 @@ void EndOfBookOptions::listScreen(UiScreen& screen, void* user) {
   static_cast<EndOfBookOptions*>(user)->buildListScreen(screen);
 }
 
-bool EndOfBookOptions::buildMarqueeLabel(const fui::DrawTarget& target, const std::string& title,
+bool EndOfBookOptions::buildMarqueeLabel(const fui::DrawTarget& target, const std::string_view title,
                                          const size_t startByte, const int16_t maxWidth, const fui::TextStyle& style) {
   marqueeLabel[0] = '\0';
   if (startByte >= title.size() || maxWidth <= 0) return false;
@@ -265,9 +265,10 @@ void EndOfBookOptions::buildListScreen(UiScreen& screen) {
   const int selected = props.selectedIndex;
   const uint32_t now = static_cast<uint32_t>(millis());
   if (selected >= 0 && selected < static_cast<int>(names.size()) && selected < visibleRows && labelWidth > 0) {
-    const std::string& title = rowLabels[selected];
+    const std::string_view title = rowLabels[selected];
     const bool overflows =
-        screen.target().measureText(props.labelText.font, title.c_str(), props.labelText).width > labelWidth;
+        screen.target().measureText(props.labelText.font, rowLabels[selected].c_str(), props.labelText).width >
+        labelWidth;
     if (overflows) {
       const uint32_t deadline = marqueeNextUpdateAt.load(std::memory_order_acquire);
       if (marqueeRow != selected || deadline == 0) {
@@ -293,7 +294,10 @@ void EndOfBookOptions::buildListScreen(UiScreen& screen) {
       const bool reachedEnd = buildMarqueeLabel(screen.target(), title, marqueeStartByte, labelWidth, props.labelText);
       const bool wasAtEnd = marqueeAtEnd;
       marqueeAtEnd = reachedEnd;
-      if (due || (!wasAtEnd && marqueeAtEnd)) {
+      if (marqueeStartByte == 0 && reachedEnd) {
+        // An oversized single codepoint has no further window to reveal.
+        marqueeNextUpdateAt.store(0, std::memory_order_release);
+      } else if (due || (!wasAtEnd && marqueeAtEnd)) {
         const uint32_t pause =
             restarted ? MARQUEE_INITIAL_PAUSE_MS : (marqueeAtEnd ? MARQUEE_END_PAUSE_MS : MARQUEE_STEP_INTERVAL_MS);
         marqueeNextUpdateAt.store(marqueeDeadline(now, pause), std::memory_order_release);
