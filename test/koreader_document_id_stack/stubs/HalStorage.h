@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Fixture.h"
+#include "Logging.h"
 
 class HalFile {
  public:
@@ -32,6 +33,7 @@ class HalFile {
       auto* bytes = static_cast<uint8_t*>(destination);
       for (size_t i = 0; i < filled; ++i) bytes[i] = documentIdFixture::patternByte(cursor + i);
     }
+    if (result < 0) LOG_ERR("KODoc", "Read failed at offset %zu", cursor);
     return result;
   }
 
