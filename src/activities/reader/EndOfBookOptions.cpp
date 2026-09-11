@@ -33,7 +33,11 @@ uint32_t marqueeDeadline(const uint32_t now, const uint32_t pause) {
 size_t nextUtf8Boundary(const std::string_view text, const size_t byte) {
   if (byte >= text.size()) return text.size();
   size_t next = byte + 1;
-  while (next < text.size() && (static_cast<unsigned char>(text[next]) & 0xC0) == 0x80) ++next;
+  size_t continuations = 0;
+  while (continuations < 3 && next < text.size() && (static_cast<unsigned char>(text[next]) & 0xC0) == 0x80) {
+    ++continuations;
+    ++next;
+  }
   return next;
 }
 

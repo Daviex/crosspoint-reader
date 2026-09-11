@@ -172,6 +172,24 @@ TEST_F(EndOfBookOptionsTest, SingleOversizedCodepointStaysIdleAndAnotherSelectio
   }
 }
 
+TEST_F(EndOfBookOptionsTest, MalformedUtf8CannotSkipAnUnboundedRunOfContinuationBytes) {
+  marquee_test::screen.content.width = 20;
+  std::string title = "A";
+  title.append(8, static_cast<char>(0x80));
+  title += "long title";
+  open({title});
+  std::string initial = "A";
+  initial.append(3, static_cast<char>(0x80));
+  EXPECT_EQ(label(), initial);
+
+  ASSERT_TRUE(tick(1600));
+  EXPECT_EQ(label(), std::string(5, static_cast<char>(0x80)));
+  ASSERT_TRUE(tick(1900));
+  EXPECT_EQ(label(), std::string(1, static_cast<char>(0x80)));
+  ASSERT_TRUE(tick(2200));
+  EXPECT_EQ(label(), "l");
+}
+
 TEST_F(EndOfBookOptionsTest, DeadlineDoesNotConsumeLongBackOrReplaceNavigationActions) {
   open({"A sufficiently long title with an ending 123"});
   marquee_test::now = 1600;
