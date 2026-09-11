@@ -123,7 +123,10 @@ bool HalClock::syncFromNTP() {
       if (!_available) return true;
       time_t now = time(nullptr);
       struct tm timeinfo;
-      if (!gmtime_r(&now, &timeinfo)) return false;
+      if (!gmtime_r(&now, &timeinfo)) {
+        LOG_ERR("CLK", "Could not convert synchronized UTC");
+        return false;
+      }
 
       Rtc::DateTime dt;
       dt.year = static_cast<uint16_t>(timeinfo.tm_year + 1900);
