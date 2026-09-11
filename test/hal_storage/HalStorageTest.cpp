@@ -8,19 +8,22 @@
 namespace {
 
 // Armed only around a HAL call; the fixed-size SDK stub never allocates.
-// Throwing allocation failure aborts, matching the firmware's no-exceptions
+// Unexpected throwing allocations are counted while the probe is armed. An
+// actual malloc failure still aborts, matching the firmware's no-exceptions
 // behavior. CTest runs each case separately, including baseline failures.
 class AllocationProbe {
  public:
   explicit AllocationProbe(bool fail = false) {
     storage_test::state.allocations = 0;
     storage_test::state.nothrowAllocations = 0;
+    storage_test::state.throwingAllocations = 0;
     storage_test::state.countAllocations = true;
     storage_test::state.failAllocation = fail;
   }
   ~AllocationProbe() {
     storage_test::state.countAllocations = false;
     storage_test::state.failAllocation = false;
+    EXPECT_EQ(storage_test::state.throwingAllocations, 0U);
   }
 };
 
@@ -214,7 +217,7 @@ void* operator new(const size_t size) {
   auto& state = storage_test::state;
   if (state.countAllocations) {
     ++state.allocations;
-    if (state.failAllocation) std::abort();
+    ++state.throwingAllocations;
   }
   if (void* memory = std::malloc(size == 0 ? 1 : size)) return memory;
   std::abort();

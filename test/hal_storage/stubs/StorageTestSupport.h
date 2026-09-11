@@ -16,6 +16,7 @@ struct State {
   unsigned nextEntries = 0;
   unsigned allocations = 0;
   unsigned nothrowAllocations = 0;
+  unsigned throwingAllocations = 0;
   unsigned errors = 0;
   bool unlockedOperation = false;
   bool openSucceeds = true;
