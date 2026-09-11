@@ -11,8 +11,9 @@
 namespace {
 
 void setRelease(const std::string_view version) {
-  ota_test::releaseJson = "{\"tag_name\":\"" + std::string(version) +
-                          "\",\"assets\":[{\"name\":\"firmware.bin\",\"browser_download_url\":"
+  const std::string assetName = "crosspoint-" + std::string(version) + "-x3-x4.bin";
+  ota_test::releaseJson = "{\"tag_name\":\"" + std::string(version) + "\",\"assets\":[{\"name\":\"" + assetName +
+                          "\",\"browser_download_url\":"
                           "\"https://example.com/firmware.bin\",\"size\":100}]}";
 }
 
