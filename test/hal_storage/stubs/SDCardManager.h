@@ -53,6 +53,11 @@ class FsFile {
   size_t getName(char*, size_t) { return 0; }
   size_t size() { return 0; }
   size_t fileSize() { return 0; }
+  bool getModifyDateTime(uint16_t* date, uint16_t* time) {
+    if (date) *date = 0;
+    if (time) *time = 0;
+    return false;
+  }
   bool seekSet(uint64_t) { return opened; }
   bool seekCur(int64_t) { return opened; }
   int available() const { return 0; }
