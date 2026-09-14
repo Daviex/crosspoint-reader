@@ -1,5 +1,7 @@
 #include "OtaVersion.h"
 
+#include <Logging.h>
+
 #include <algorithm>
 
 namespace ota_version {
@@ -95,7 +97,14 @@ int comparePrerelease(std::string_view left, std::string_view right) {
 bool isNewer(const std::string_view latest, const std::string_view current) {
   Version latestVersion{};
   Version currentVersion{};
-  if (!parse(latest, latestVersion, false) || !parse(current, currentVersion, true)) return false;
+  if (!parse(latest, latestVersion, false)) {
+    LOG_ERR("OTA", "Invalid latest release version");
+    return false;
+  }
+  if (!parse(current, currentVersion, true)) {
+    LOG_ERR("OTA", "Invalid current firmware version");
+    return false;
+  }
   for (size_t part = 0; part < 3; ++part) {
     const int comparison = compareNumeric(latestVersion.core[part], currentVersion.core[part]);
     if (comparison != 0) return comparison > 0;
