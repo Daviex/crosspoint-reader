@@ -19,17 +19,26 @@ bool leapYear(const unsigned year) { return year % 4 == 0 && (year % 100 != 0 ||
 bool rtcEpoch(const Rtc::DateTime& dt, time_t& epoch) {
   constexpr uint8_t MONTH_DAYS[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   if (dt.year < 2020 || dt.year >= 2100 || dt.month < 1 || dt.month > 12 || dt.hour > 23 || dt.minute > 59 ||
-      dt.second > 59)
+      dt.second > 59) {
+    LOG_ERR("CLK", "Invalid RTC date or time fields");
     return false;
+  }
   const unsigned daysInMonth = MONTH_DAYS[dt.month - 1] + (dt.month == 2 && leapYear(dt.year) ? 1 : 0);
-  if (dt.day < 1 || dt.day > daysInMonth) return false;
+  if (dt.day < 1 || dt.day > daysInMonth) {
+    LOG_ERR("CLK", "Invalid RTC day for month");
+    return false;
+  }
   int64_t days = dt.day - 1;
   for (unsigned year = 1970; year < dt.year; ++year) days += leapYear(year) ? 366 : 365;
   for (unsigned month = 1; month < dt.month; ++month) {
     days += MONTH_DAYS[month - 1] + (month == 2 && leapYear(dt.year) ? 1 : 0);
   }
   epoch = static_cast<time_t>(days * 86400 + dt.hour * 3600 + dt.minute * 60 + dt.second);
-  return validEpoch(epoch);
+  if (!validEpoch(epoch)) {
+    LOG_ERR("CLK", "RTC date produced an invalid system epoch");
+    return false;
+  }
+  return true;
 }
 }  // namespace
 
