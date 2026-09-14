@@ -2,6 +2,7 @@
 #include <StorageTestSupport.h>
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 
@@ -220,7 +221,8 @@ void* operator new(const size_t size) {
     ++state.throwingAllocations;
   }
   if (void* memory = std::malloc(size == 0 ? 1 : size)) return memory;
-  std::abort();
+  std::fputs("Unexpected host OOM in HalStorageTest\n", stderr);
+  std::exit(EXIT_FAILURE);
 }
 
 void* operator new(const size_t size, const std::nothrow_t&) noexcept {
