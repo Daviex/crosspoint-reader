@@ -10,6 +10,7 @@ target_compile_definitions(KOReaderProgressParserUnderTest PRIVATE
 )
 target_include_directories(KOReaderProgressParserUnderTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+  ${REPO_ROOT}/lib
   ${REPO_ROOT}/lib/KOReaderSync
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/XmlParserUtils
