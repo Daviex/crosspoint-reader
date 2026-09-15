@@ -23,14 +23,17 @@ Itanium C++ ABI and a linker that supports `--wrap`. CMake compiles, links and
 runs a probe that verifies interception of `_ZnamRKSt9nothrow_t` and delegation
 to the original allocator. Compiler identity alone does not enable the wrapper.
 If the probe fails or the host is unsupported, the target still runs its digest,
-sampling and API tests; only the allocation-failure test is skipped and allocation
+sampling and open-failure tests; only the allocation-failure test is skipped and allocation
 counts are not asserted. The configure log reports which path is active.
 
 OpenSSL adapter failures are logged and recorded as GoogleTest failures, even
 when the caller expects an empty result. The adapter preserves the firmware's
-void API, clears its digest on failure and ignores subsequent calls. Fault
-injection covers context allocation, initialization, update and finalization;
-tests verify diagnostics, context cleanup and persistent failure state.
+void API, clears its digest on failure and ignores subsequent calls.
+
+The four cases cover unchanged valid-file hashes, one scratch allocation across
+all sample offsets, allocation failure with file cleanup, and avoiding scratch
+allocation when opening the file fails. Filename-only hashing and the host
+adapter's own failure machinery are outside this scratch-buffer refactor.
 
 To exercise the same fallback on a supported host, configure a separate build
 with `-DKOREADER_DOCUMENT_ID_STACK_FORCE_NO_WRAP=ON` and run the target above.

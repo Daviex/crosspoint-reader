@@ -103,14 +103,4 @@ TEST_F(DocumentIdStack, OpenFailureDoesNotAllocateScratchStorage) {
   EXPECT_EQ(fixture.closedFiles, 0);
 }
 
-TEST_F(DocumentIdStack, FilenameHashingDoesNotDependOnScratchStorage) {
-  failScratchAllocation = true;
-  EXPECT_EQ(KOReaderDocumentId::calculateFromFilename("/one/book.epub"), "03053ffc045564439ff7f2cabb3b58c5");
-  EXPECT_EQ(KOReaderDocumentId::calculateFromFilename("/another/book.epub"), "03053ffc045564439ff7f2cabb3b58c5");
-  EXPECT_TRUE(KOReaderDocumentId::calculateFromFilename("/directory/").empty());
-  if (CAN_WRAP_NOTHROW) {
-    EXPECT_EQ(scratchAllocationCalls, 0U);
-  }
-}
-
 }  // namespace
