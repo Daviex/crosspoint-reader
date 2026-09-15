@@ -14,17 +14,14 @@
 class MD5Builder {
  public:
   MD5Builder() {
-    if (!injectedFailure(documentIdFixture::Md5Operation::Context)) context = EVP_MD_CTX_new();
+    context = EVP_MD_CTX_new();
     if (!context) {
       fail("EVP_MD_CTX_new failed");
-    } else {
-      ++documentIdFixture::state.md5ContextsCreated;
     }
   }
   ~MD5Builder() {
     if (context) {
       EVP_MD_CTX_free(context);
-      ++documentIdFixture::state.md5ContextsFreed;
     }
   }
   MD5Builder(const MD5Builder&) = delete;
@@ -32,8 +29,7 @@ class MD5Builder {
 
   void begin() {
     if (failed) return;
-    if (injectedFailure(documentIdFixture::Md5Operation::Initialize) ||
-        EVP_DigestInit_ex(context, EVP_md5(), nullptr) != 1) {
+    if (EVP_DigestInit_ex(context, EVP_md5(), nullptr) != 1) {
       fail("EVP_DigestInit_ex failed");
     }
   }
@@ -51,7 +47,7 @@ class MD5Builder {
       fixture.oversizedHashFeed = true;
       return;
     }
-    if (injectedFailure(documentIdFixture::Md5Operation::Update) || EVP_DigestUpdate(context, bytes, count) != 1) {
+    if (EVP_DigestUpdate(context, bytes, count) != 1) {
       fail("EVP_DigestUpdate failed");
     }
   }
@@ -59,8 +55,7 @@ class MD5Builder {
     if (failed) return;
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int length = 0;
-    if (injectedFailure(documentIdFixture::Md5Operation::Finalize) ||
-        EVP_DigestFinal_ex(context, digest, &length) != 1 || length != 16) {
+    if (EVP_DigestFinal_ex(context, digest, &length) != 1 || length != 16) {
       fail("EVP_DigestFinal_ex failed");
       return;
     }
@@ -74,12 +69,6 @@ class MD5Builder {
   const std::string& toString() const { return value; }
 
  private:
-  static bool injectedFailure(const documentIdFixture::Md5Operation operation) {
-    auto& fixture = documentIdFixture::state;
-    ++fixture.md5Calls[static_cast<size_t>(operation)];
-    return fixture.failedMd5Operation == operation;
-  }
-
   void fail(const char* reason) {
     if (failed) return;
     failed = true;

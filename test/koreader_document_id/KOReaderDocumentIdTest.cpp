@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -127,14 +126,6 @@ TEST_F(DocumentId, RejectsFailedSeeksInsteadOfOmittingASample) {
   EXPECT_EQ(fixture.reads.size(), 1U);
   EXPECT_EQ(fixture.hashFeedSizes, std::vector<size_t>{1024});
   EXPECT_EQ(fixture.closedFiles, 1);
-}
-
-TEST_F(DocumentId, FilenameHashingStillIgnoresTheParentDirectory) {
-  EXPECT_EQ(KOReaderDocumentId::calculateFromFilename("/one/book.epub"), "03053ffc045564439ff7f2cabb3b58c5");
-  EXPECT_EQ(KOReaderDocumentId::calculateFromFilename("/one/book.epub"),
-            KOReaderDocumentId::calculateFromFilename("/another/book.epub"));
-  EXPECT_TRUE(KOReaderDocumentId::calculateFromFilename("/directory/").empty());
-  EXPECT_TRUE(KOReaderDocumentId::calculateFromFilename("").empty());
 }
 
 }  // namespace

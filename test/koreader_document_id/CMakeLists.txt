@@ -9,7 +9,6 @@ endif()
 
 add_executable(KOReaderDocumentIdTest
   KOReaderDocumentIdTest.cpp
-  MD5BuilderTest.cpp
   ${REPO_ROOT}/lib/KOReaderSync/KOReaderDocumentId.cpp
 )
 

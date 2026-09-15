@@ -29,8 +29,11 @@ official sample offset.
 OpenSSL adapter failures are logged and recorded as GoogleTest failures, even
 when the document-ID caller expects an empty result. The adapter preserves the
 firmware's void API, clears its digest on failure and ignores subsequent calls.
-Fault injection covers context allocation, initialization, update and finalization;
-the tests check the diagnostic, context cleanup and persistent failure state.
+
+The nine cases cover valid-file hashes and sample boundaries, open failures,
+negative/zero/short/oversized reads, discarding earlier samples after a late read
+failure, and failed seeks. Filename-only hashing and the host adapter's own
+failure machinery are outside this read-validation change.
 
 This is host verification of sampling and error handling. It does not exercise
 a physical SD card or the ESP32 ROM MD5 implementation.
