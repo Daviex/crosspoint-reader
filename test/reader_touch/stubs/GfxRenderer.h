@@ -15,10 +15,8 @@ class GfxRenderer {
     HalDisplay::GrayscaleBase base = HalDisplay::GrayscaleBase::Separate;
   };
 
-  int width = 480;
-  int height = 800;
-  int getScreenWidth() const { return width; }
-  int getScreenHeight() const { return height; }
+  int getScreenWidth() const { return 480; }
+  int getScreenHeight() const { return 800; }
   void setOrientation(Orientation) {}
   void displayBuffer(HalDisplay::RefreshMode) const {}
   void displayBufferAsync(HalDisplay::RefreshMode) const {}
