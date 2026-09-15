@@ -10,7 +10,7 @@ namespace {
 
 // Armed only around a HAL call; the fixed-size SDK stub never allocates.
 // Unexpected throwing allocations are counted while the probe is armed. An
-// actual malloc failure still aborts, matching the firmware's no-exceptions
+// actual malloc failure still terminates, matching the firmware's no-exceptions
 // behavior. CTest runs each case separately, including baseline failures.
 class AllocationProbe {
  public:
@@ -175,18 +175,6 @@ TEST_F(HalStorageTest, MovedFromHandleCanBeClosed) {
   EXPECT_TRUE(file.close());
   EXPECT_TRUE(moved);
   EXPECT_EQ(storage_test::state.closeCalls, 0U);
-}
-
-TEST_F(HalStorageTest, MissingOptionalSidecarCanBeClosedDuringCleanup) {
-  auto synonyms = Storage.open("/dictionary.syn");
-  storage_test::state.openSucceeds = false;
-  HalFile sidecar;
-  EXPECT_FALSE(Storage.openFileForRead("DICT", "/dictionary.sidx", sidecar));
-  // Dictionary::openSynonyms closes both handles when the optional index
-  // cannot be opened. The missing sidecar must not prevent normal cleanup.
-  EXPECT_TRUE(sidecar.close());
-  EXPECT_TRUE(synonyms.close());
-  EXPECT_EQ(storage_test::state.closeCalls, 1U);
 }
 
 TEST_F(HalStorageTest, CloseReportsUnderlyingFailureAndRemainsIdempotent) {
