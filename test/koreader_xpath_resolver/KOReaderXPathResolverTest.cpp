@@ -61,6 +61,14 @@ TEST(KOReaderXPathResolver, ResolvesProgressAfterNestedNonVisibleInlineText) {
   EXPECT_EQ(ChapterXPathResolver::findXPathForProgress(epub, 0, 1.0f), "/body/DocFragment[1]/body/p[1]/text()[1].12");
 }
 
+TEST(KOReaderXPathResolver, ResolvesProgressAcrossListItemsAndParagraphs) {
+  const auto epub = epubWith("<html><body><ul><li>List</li><li><p>More</p></li></ul><p>Text</p></body></html>");
+
+  EXPECT_EQ(ChapterXPathResolver::findXPathForProgress(epub, 0, 0.5f),
+            "/body/DocFragment[1]/body/ul[1]/li[2]/p[1]/text()[1].2");
+  EXPECT_EQ(ChapterXPathResolver::findXPathForProgress(epub, 0, 1.0f), "/body/DocFragment[1]/body/p[1]/text()[1].4");
+}
+
 TEST(KOReaderXPathResolver, CountsUtf8CodepointsInsteadOfBytes) {
   const auto epub = epubWith(
       "<?xml version=\"1.0\" encoding=\"UTF-8\"?><html><body><p>A\xC3\xA9\xE4\xB8\xAD"
