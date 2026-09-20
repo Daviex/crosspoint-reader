@@ -71,6 +71,7 @@ void ReaderActivity::onEnter() {
 
 void ReaderActivity::onExit() {
   Activity::onExit();
+  touchPageTurnFilter.clear();
 
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   APP_STATE.readerActivityLoadCount = 0;
@@ -139,13 +140,24 @@ bool ReaderActivity::handleEndOfBookPageTurn(const bool prevTriggered, const boo
   return true;
 }
 
+ReaderUtils::TouchPageTurn ReaderActivity::readTouchPageTurn() {
+  int touchX = 0;
+  int touchY = 0;
+  return touchPageTurnFilter.update(
+      ReaderUtils::detectTouchPageTurn(renderer, mappedInput),
+      mappedInput.wasSwipe() != MappedInputManager::SwipeDir::None,
+      mappedInput.hasTouch() && SETTINGS.touchReaderControls == CrossPointSettings::TOUCH_READER_TAP_SWIPE,
+      static_cast<uint32_t>(millis()), mappedInput.isScreenTouchHeld(touchX, touchY));
+}
+
 void ReaderActivity::loop() {
   clearEndOfBookOptionsIfNeeded();
-  if (handleEndOfBookMenu()) return;
-  if (handleFormatInput()) return;
-  if (handleBackNavigation()) return;
+  if (handleEndOfBookMenu() || handleFormatInput() || handleBackNavigation()) {
+    touchPageTurnFilter.clear();
+    return;
+  }
 
-  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  const auto touch = readTouchPageTurn();
   auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;

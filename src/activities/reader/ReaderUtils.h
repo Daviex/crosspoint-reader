@@ -8,6 +8,7 @@
 #include <components/bars/tap-zones.h>
 
 #include "MappedInputManager.h"
+#include "ReaderPageTurnInput.h"
 #include "activities/ActivityManager.h"
 
 namespace ReaderUtils {
@@ -68,12 +69,6 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
                     pageButtonTriggered(nextButton);
   return {prev, next, tiltPrev || tiltNext};
 }
-
-struct TouchPageTurn {
-  bool prev;
-  bool next;
-  unsigned long heldMs;
-};
 
 inline TouchPageTurn detectTouchPageTurn(const GfxRenderer& renderer, const MappedInputManager& input) {
   TouchPageTurn result{false, false, 0};

@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <limits>
+
 #include "activities/reader/ReaderUtils.h"
 
 namespace {
@@ -28,6 +31,54 @@ class ReaderTouchTest : public testing::Test {
     EXPECT_EQ(result.heldMs, heldMs);
   }
 };
+
+TEST_F(ReaderTouchTest, TapThenSwipeOnSeparateTicksUsesSwipeDirectionOnly) {
+  ReaderUtils::TouchPageTurnFilter filter;
+  tapAt(20);
+  EXPECT_FALSE(filter.update(ReaderUtils::detectTouchPageTurn(renderer, input), false, true, 1000).prev);
+  EXPECT_FALSE(filter.update({}, false, true, 1200, true).prev);  // Following swipe still down.
+  input.tap = false;
+  input.swipe = SwipeDir::Left;
+  const auto swipe = filter.update(ReaderUtils::detectTouchPageTurn(renderer, input), true, true, 1250);
+  EXPECT_TRUE(swipe.next);
+  EXPECT_FALSE(swipe.prev);
+  EXPECT_FALSE(filter.hasPending());
+  const auto idle = filter.update({}, false, true, 1300);
+  EXPECT_FALSE(idle.prev || idle.next);
+}
+
+TEST_F(ReaderTouchTest, SwipeSuppressesNearbyTapButNotALaterTap) {
+  ReaderUtils::TouchPageTurnFilter filter;
+  input.swipe = SwipeDir::Left;
+  EXPECT_TRUE(filter.update(ReaderUtils::detectTouchPageTurn(renderer, input), true, true, 1000).next);
+  input.swipe = SwipeDir::None;
+  tapAt(20);
+  const auto adjacent = filter.update(ReaderUtils::detectTouchPageTurn(renderer, input), false, true, 1050);
+  EXPECT_FALSE(adjacent.prev || adjacent.next);
+  EXPECT_FALSE(filter.hasPending());
+  filter.update(ReaderUtils::detectTouchPageTurn(renderer, input), false, true, 1300);
+  EXPECT_TRUE(filter.update({}, false, true, 1450).prev);
+  EXPECT_FALSE(filter.hasPending());
+}
+
+TEST_F(ReaderTouchTest, SingleTapDeadlineHoldDurationAndResetArePreserved) {
+  ReaderUtils::TouchPageTurnFilter filter;
+  const ReaderUtils::TouchPageTurn tap{false, true, ReaderUtils::SKIP_HOLD_MS};
+  const uint32_t start = std::numeric_limits<uint32_t>::max() - 50;
+  EXPECT_FALSE(filter.update(tap, false, true, start).next);
+  EXPECT_FALSE(filter.update({}, false, true, start + 149).next);
+  const auto ready = filter.update({}, false, true, start + 150);
+  EXPECT_TRUE(ready.next);
+  EXPECT_EQ(ready.heldMs, ReaderUtils::SKIP_HOLD_MS);
+  EXPECT_FALSE(filter.update({}, false, true, start + 151).next);
+  filter.update(tap, false, true, 2000);
+  filter.clear();
+  EXPECT_FALSE(filter.update({}, false, true, 2300).next);
+  EXPECT_TRUE(filter.update(tap, false, false, 2400).next);  // Tap-only mode stays immediate.
+  EXPECT_FALSE(filter.hasPending());
+  filter.update(tap, false, true, 3000);
+  EXPECT_TRUE(filter.update({}, false, true, 3850, true).next);  // A stuck contact cannot strand the tap.
+}
 
 TEST_F(ReaderTouchTest, CombinedModeAlternatesTapsAndSwipes) {
   tapAt(20);

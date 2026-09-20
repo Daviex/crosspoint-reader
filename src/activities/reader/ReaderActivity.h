@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "EndOfBookOptions.h"
+#include "ReaderPageTurnInput.h"
 #include "activities/Activity.h"
 
 class ReaderActivity : public Activity {
@@ -13,6 +14,8 @@ class ReaderActivity : public Activity {
   std::string bookPath;
   int pagesUntilFullRefresh = 0;
   bool forcedRefreshPending = false;
+  ReaderUtils::TouchPageTurnFilter touchPageTurnFilter;
+  ReaderUtils::TouchPageTurn readTouchPageTurn();
 
   std::unique_ptr<EndOfBookOptions> endOfBookOptions;
   std::atomic<bool> endOfBookOptionsReady{false};
