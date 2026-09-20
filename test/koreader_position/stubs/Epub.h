@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Logging.h>
 #include <Print.h>
 
 #include <algorithm>
@@ -22,6 +23,7 @@ class Epub {
 
   SpineEntry getSpineItem(const int spineIndex) const {
     if (spineIndex < 0 || spineIndex >= getSpineItemsCount()) {
+      LOG_ERR("TEST", "Invalid spine index %d", spineIndex);
       return {};
     }
     return {"chapter" + std::to_string(spineIndex) + ".xhtml"};
@@ -31,6 +33,7 @@ class Epub {
                                 const bool allowEarlyStop = false) const {
     const int spineIndex = parseSpineIndex(href);
     if (spineIndex < 0) {
+      LOG_ERR("TEST", "Cannot read invalid spine href");
       return false;
     }
 
@@ -40,6 +43,7 @@ class Epub {
       const size_t count = std::min(chunkSize, chapter.size() - offset);
       const size_t written = output.write(reinterpret_cast<const uint8_t*>(chapter.data() + offset), count);
       if (written != count) {
+        if (!allowEarlyStop) LOG_ERR("TEST", "Unexpected short write");
         return allowEarlyStop;
       }
     }
@@ -49,6 +53,7 @@ class Epub {
   bool getItemSize(const std::string& href, size_t* size) const {
     const int spineIndex = parseSpineIndex(href);
     if (spineIndex < 0 || !size) {
+      LOG_ERR("TEST", "Cannot get size for invalid spine or null output");
       return false;
     }
     *size = chapters_[spineIndex].size();
@@ -90,21 +95,28 @@ class Epub {
     static constexpr char prefix[] = "chapter";
     static constexpr char suffix[] = ".xhtml";
     if (!href.starts_with(prefix) || !href.ends_with(suffix)) {
+      LOG_ERR("TEST", "Invalid spine href format");
       return -1;
     }
     const std::string digits =
         href.substr(sizeof(prefix) - 1, href.size() - (sizeof(prefix) - 1) - (sizeof(suffix) - 1));
     if (digits.empty()) {
+      LOG_ERR("TEST", "Missing spine number");
       return -1;
     }
     int value = 0;
     for (const char digit : digits) {
       if (digit < '0' || digit > '9') {
+        LOG_ERR("TEST", "Invalid spine number");
         return -1;
       }
       value = value * 10 + digit - '0';
     }
-    return value < getSpineItemsCount() ? value : -1;
+    if (value >= getSpineItemsCount()) {
+      LOG_ERR("TEST", "Spine number out of range");
+      return -1;
+    }
+    return value;
   }
 
   std::vector<std::string> chapters_;

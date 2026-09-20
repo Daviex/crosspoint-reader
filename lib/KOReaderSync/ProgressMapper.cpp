@@ -205,6 +205,19 @@ class ParagraphStreamer final : public Print {
   char entityBuffer[MAX_ENTITY_SIZE] = {};
   size_t entityLen = 0;
   bool prevCR = false;  // last counted visible byte was a CR (XML line-ending normalization)
+  enum class MarkupState : uint8_t {
+    None,
+    DeclarationStart,
+    Declaration,
+    CommentStart,
+    CdataStart,
+    Comment,
+    Pi,
+    Cdata
+  };
+  MarkupState markupState = MarkupState::None;
+  uint8_t markupPrefix = 0;
+  uint8_t markupSuffix = 0;
 
   // Forward mode: count <p> paragraphs at a byte offset (legacy, used by generateXPath)
   size_t fwdTarget;
@@ -428,6 +441,86 @@ class ParagraphStreamer final : public Print {
     while (*ptr != 0) {
       utf8NextCodepoint(&ptr);
       onVisibleCodepoint();
+    }
+  }
+
+  void onVisibleByte(const uint8_t c) {
+    const bool afterCR = prevCR;
+    prevCR = false;
+    if (!insideBody || nonVisibleDepth > 0 || (c == '\n' && afterCR)) return;
+    if ((c & 0xC0) != 0x80) onVisibleCodepoint();
+    prevCR = c == '\r';
+  }
+
+  void finishMarkup() {
+    markupState = MarkupState::None;
+    markupSuffix = 0;
+    currentTextNodeOpen = false;
+    prevCR = false;
+  }
+
+  void processMarkupByte(const uint8_t c) {
+    switch (markupState) {
+      case MarkupState::DeclarationStart:
+        if (c == '-') {
+          markupState = MarkupState::CommentStart;
+        } else if (c == '[') {
+          markupState = MarkupState::CdataStart;
+          markupPrefix = 0;
+        } else {
+          markupState = MarkupState::Declaration;
+          if (c == '>') finishMarkup();
+        }
+        break;
+      case MarkupState::CommentStart:
+        markupState = c == '-' ? MarkupState::Comment : MarkupState::Declaration;
+        if (c == '>') finishMarkup();
+        break;
+      case MarkupState::CdataStart: {
+        static constexpr char PREFIX[] = "CDATA[";
+        if (c == PREFIX[markupPrefix]) {
+          if (++markupPrefix == sizeof(PREFIX) - 1) markupState = MarkupState::Cdata;
+        } else {
+          markupState = MarkupState::Declaration;
+          if (c == '>') finishMarkup();
+        }
+        break;
+      }
+      case MarkupState::Declaration:
+        if (c == '>') finishMarkup();
+        break;
+      case MarkupState::Comment:
+        if (c == '>' && markupSuffix == 2)
+          finishMarkup();
+        else
+          markupSuffix = c == '-' ? std::min<uint8_t>(2, markupSuffix + 1) : 0;
+        break;
+      case MarkupState::Pi:
+        if (c == '>' && markupSuffix == 1)
+          finishMarkup();
+        else
+          markupSuffix = c == '?' ? 1 : 0;
+        break;
+      case MarkupState::Cdata:
+        // Hold the possible closing brackets across input chunks. CDATA text
+        // is literal, so '<' and '&' never start tags or entity references.
+        if (c == ']') {
+          if (markupSuffix == 2)
+            onVisibleByte(']');
+          else
+            markupSuffix++;
+        } else if (c == '>' && markupSuffix == 2) {
+          finishMarkup();
+        } else {
+          while (markupSuffix > 0) {
+            onVisibleByte(']');
+            markupSuffix--;
+          }
+          onVisibleByte(c);
+        }
+        break;
+      case MarkupState::None:
+        break;
     }
   }
 
@@ -664,6 +757,19 @@ class ParagraphStreamer final : public Print {
     }
     bytesWritten++;
 
+    if (markupState != MarkupState::None) {
+      processMarkupByte(c);
+      return 1;
+    }
+    if (globalInTag && tagState == TAG_IDLE && (c == '!' || c == '?')) {
+      markupState = c == '!' ? MarkupState::DeclarationStart : MarkupState::Pi;
+      markupSuffix = 0;
+      currentTextNodeOpen = false;
+      globalInTag = false;
+      prevCR = false;
+      return 1;
+    }
+
     if (globalInEntity) {
       if (entityLen + 1 < MAX_ENTITY_SIZE) {
         entityBuffer[entityLen++] = static_cast<char>(c);
@@ -684,14 +790,8 @@ class ParagraphStreamer final : public Print {
       return 1;
     }
 
-    // XML 1.0 §2.11 line-ending normalization: expat (which builds the page LUT) collapses a
-    // "\r\n" pair and a lone "\r" to a single "\n". Mirror that so this byte counter -- which the
-    // resolved offset is measured against -- stays codepoint-for-codepoint identical. prevCR is
-    // set only by the visible-text branch below, so any non-text byte clears it here.
-    const bool afterCR = prevCR;
-    prevCR = false;
-
     if (c == '<') {
+      prevCR = false;
       globalInTag = true;
       tagState = TAG_IDLE;
       tagNameLen = 0;
@@ -700,7 +800,8 @@ class ParagraphStreamer final : public Print {
       resetAnchorAttrScan();
       inAttrQuote = false;
       attrQuoteChar = 0;
-    } else if (c == '>') {
+    } else if (c == '>' && globalInTag) {
+      prevCR = false;
       if (tagState == TAG_ATTRS) {
         endAnchorIdScan();
       }
@@ -716,21 +817,20 @@ class ParagraphStreamer final : public Print {
       }
       tagState = TAG_IDLE;
     } else if (globalInTag) {
+      prevCR = false;
       processByteInTag(c);
     } else if (!insideBody || nonVisibleDepth > 0) {
       // Ignore head/style/script/title text. KOReader XPaths are body-relative, and CSS text
       // should not contribute to intra-spine progress.
+      prevCR = false;
     } else {
       if (c == '&') {
+        prevCR = false;
         globalInEntity = true;
         entityBuffer[0] = '&';
         entityLen = 1;
-      } else if (c == '\n' && afterCR) {
-        // Second half of a CRLF: the newline was already counted on the preceding CR.
       } else {
-        const bool startsCodepoint = (c & 0xC0) != 0x80;
-        if (startsCodepoint) onVisibleCodepoint();
-        prevCR = (c == '\r');  // a lone/leading CR is the newline; swallow any '\n' that follows
+        onVisibleByte(c);
       }
     }
     return 1;

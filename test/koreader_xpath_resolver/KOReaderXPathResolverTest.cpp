@@ -57,6 +57,7 @@ TEST(KOReaderXPathResolver, IgnoresNestedNonVisibleInlineText) {
 TEST(KOReaderXPathResolver, ResolvesProgressAfterNestedNonVisibleInlineText) {
   const auto epub = epubWith(kNonVisibleInlineFixture);
 
+  EXPECT_EQ(ChapterXPathResolver::findXPathForProgress(epub, 0, 0.5f), "/body/DocFragment[1]/body/p[1]/text()[1].6");
   EXPECT_EQ(ChapterXPathResolver::findXPathForProgress(epub, 0, 1.0f), "/body/DocFragment[1]/body/p[1]/text()[1].12");
 }
 
@@ -69,56 +70,69 @@ TEST(KOReaderXPathResolver, CountsUtf8CodepointsInsteadOfBytes) {
             "/body/DocFragment[1]/body/p[1]/text()[1].3");
 }
 
-TEST(KOReaderXPathResolver, FallsBackWhenCommentsInterruptVisibleText) {
+TEST(KOReaderXPathResolver, SplitsTextNodesAroundComments) {
   const auto epub = epubWith(kCommentBoundaryFixture);
 
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 6).empty());
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 11).empty());
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 7).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 6),
+            "/body/DocFragment[1]/body/p[1]/text()[2].0");
+  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 12).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 7),
+            "/body/DocFragment[1]/body/p[1]/text()[2].1");
 }
 
-TEST(KOReaderXPathResolver, FallsBackWhenProcessingInstructionsInterruptVisibleText) {
+TEST(KOReaderXPathResolver, SplitsTextNodesAroundProcessingInstructions) {
   const auto epub = epubWith(kProcessingInstructionBoundaryFixture);
 
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 7).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 7),
+            "/body/DocFragment[1]/body/p[1]/text()[2].1");
 }
 
-TEST(KOReaderXPathResolver, FallsBackWhenCdataInterruptsVisibleText) {
+TEST(KOReaderXPathResolver, SplitsTextNodesAroundCdata) {
   const auto epub = epubWith(kCdataBoundaryFixture);
 
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 7).empty());
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 13).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 7),
+            "/body/DocFragment[1]/body/p[1]/text()[2].1");
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 13),
+            "/body/DocFragment[1]/body/p[1]/text()[3].1");
 }
 
-TEST(KOReaderXPathResolver, FallsBackWhenCommentPrecedesVisibleText) {
+TEST(KOReaderXPathResolver, DoesNotCreateNodesBeforeFirstComment) {
   const auto epub = epubWith(R"(<html><body><p><!--comment-->text</p></body></html>)");
 
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 0).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 0),
+            "/body/DocFragment[1]/body/p[1]/text()[1].0");
 }
 
-TEST(KOReaderXPathResolver, FallsBackWhenProcessingInstructionPrecedesVisibleText) {
+TEST(KOReaderXPathResolver, DoesNotCreateNodesBeforeFirstProcessingInstruction) {
   const auto epub = epubWith(R"(<html><body><p><?marker?>text</p></body></html>)");
 
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 0).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 0),
+            "/body/DocFragment[1]/body/p[1]/text()[1].0");
 }
 
-TEST(KOReaderXPathResolver, FallsBackWhenCdataPrecedesVisibleText) {
+TEST(KOReaderXPathResolver, DoesNotCreateNodesBeforeFirstCdata) {
   const auto epub = epubWith(R"(<html><body><p><![CDATA[text]]></p></body></html>)");
 
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 0).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 0),
+            "/body/DocFragment[1]/body/p[1]/text()[1].0");
 }
 
 TEST(KOReaderXPathResolver, CountsVisibleCdataAndIgnoresHiddenCdata) {
   const auto visible = epubWith(kCdataBoundaryFixture);
   const auto hidden = epubWith(kHiddenCdataFixture);
 
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(visible, 0, 7).empty());
-  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(hidden, 0, 7).empty());
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(visible, 0, 7),
+            "/body/DocFragment[1]/body/p[1]/text()[2].1");
+  EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(hidden, 0, 7),
+            "/body/DocFragment[1]/body/p[1]/text()[2].1");
 }
 
 TEST(KOReaderXPathResolver, ReturnsEmptyForUnusableContent) {
   EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epubWith(""), 0, 0).empty());
   EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epubWith("<html><body><p>broken"), 0, 100).empty());
+}
+
+TEST(KOReaderXPathResolver, ResolvesVisibleDivTextOutsideParagraphs) {
   EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(
                 epubWith("<html><body><div>not a paragraph or list item</div></body></html>"), 0, 0),
             "/body/DocFragment[1]/body/div[1]/text()[1].0");

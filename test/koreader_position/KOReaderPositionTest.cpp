@@ -181,19 +181,31 @@ TEST(KOReaderPosition, ExcessiveNestingLeavesTheLegacyFallbackAvailable) {
   EXPECT_EQ(saved.xpath, ProgressMapper::toSavedProgress(epub, position).xpath);
 }
 
-TEST(KOReaderPosition, UnsupportedBodyXmlUsesLegacyFallbackAfterTheMarkup) {
-  for (const std::string markup : {"<!-- comment -->", "<?target data?>", "<![CDATA[x]]>"}) {
-    SCOPED_TRACE(markup);
-    const auto epub = makeEpub("<html><body><p>a" + markup + "b</p></body></html>", 1);
-    EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 1).empty());
-    auto position = positionAt(1);
+TEST(KOReaderPosition, XmlMarkupBoundariesPreserveExactRoundTrips) {
+  struct Fixture {
+    const char* markup;
+    uint32_t followingOffset;
+    const char* followingNode;
+  };
+  static constexpr Fixture fixtures[] = {
+      {"<!-- <ignored> -->", 1, "2"},
+      {"<?target <ignored>?>", 1, "2"},
+      {"<![CDATA[<&\r\né]]]>", 6, "3"},
+  };
+  GfxRenderer renderer;
+  for (const auto& fixture : fixtures) {
+    SCOPED_TRACE(fixture.markup);
+    const auto epub = makeEpub(std::string("<html><body><p>a") + fixture.markup + "b</p></body></html>", 1);
+    const auto position = positionAt(fixture.followingOffset);
     const auto saved = ProgressMapper::toSavedProgress(epub, position);
-    position.hasVisibleTextOffset = false;
-    EXPECT_EQ(saved.xpath, ProgressMapper::toSavedProgress(epub, position).xpath);
+    EXPECT_EQ(saved.xpath, std::string("/body/DocFragment[1]/body/p[1]/text()[") + fixture.followingNode + "].0");
+    const auto restored = ProgressMapper::toCrossPoint(epub, saved, renderer);
+    ASSERT_TRUE(restored.hasVisibleTextOffset);
+    EXPECT_EQ(restored.visibleTextOffset, position.visibleTextOffset);
   }
 }
 
-TEST(KOReaderPosition, UnsupportedMarkupDoesNotDiscardAnEarlierExactAnchor) {
+TEST(KOReaderPosition, LaterMarkupDoesNotDiscardAnEarlierExactAnchor) {
   const auto epub = makeEpub("<html><head><!-- metadata --></head><body><p>ab<!-- later -->cd</p></body></html>", 1);
   EXPECT_EQ(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 1),
             "/body/DocFragment[1]/body/p[1]/text()[1].1");
@@ -217,7 +229,7 @@ TEST(KOReaderPosition, DirectTextNodesRoundTripAfterLeadingConsecutiveAndHiddenC
     const char* body;
     uint32_t visibleLength;
   };
-  const Fixture fixtures[] = {
+  static constexpr Fixture fixtures[] = {
       {"<p><em>alpha</em> beta</p>", 10},
       {"<p>ab<em>x</em><strong>y</strong>cd</p>", 6},
       {"a<div>b</div><ul><li>c</li><li>d</li></ul>e", 5},
