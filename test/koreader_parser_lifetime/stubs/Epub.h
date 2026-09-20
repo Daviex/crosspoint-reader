@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Logging.h>
 #include <Print.h>
 
 #include <algorithm>
@@ -17,11 +18,17 @@ class Epub {
   int getSpineItemsCount() const { return 1; }
   SpineEntry getSpineItem(int index) const { return {index == 0 ? "chapter.xhtml" : ""}; }
   bool readItemContentsToStream(const std::string&, Print& output, size_t requestedSize) const {
-    if (++reads == failRead) return false;
+    if (++reads == failRead) {
+      LOG_ERR("TEST", "Forced EPUB read failure");
+      return false;
+    }
     const size_t step = chunkSize > 0 ? chunkSize : requestedSize;
     for (size_t offset = 0; offset < chapter.size(); offset += step) {
       const size_t count = std::min(step, chapter.size() - offset);
-      if (output.write(reinterpret_cast<const uint8_t*>(chapter.data() + offset), count) != count) return false;
+      if (output.write(reinterpret_cast<const uint8_t*>(chapter.data() + offset), count) != count) {
+        LOG_ERR("TEST", "Short write while streaming EPUB fixture");
+        return false;
+      }
     }
     return true;
   }
