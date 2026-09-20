@@ -32,7 +32,22 @@ struct ClockState {
 class HalClockTest : public ::testing::Test {
  protected:
   HalClock clock;
-  void SetUp() override { fake = {}; }
+  bool hadTimezone = false;
+  std::string savedTimezone;
+  void SetUp() override {
+    fake = {};
+    const char* previous = std::getenv("TZ");
+    hadTimezone = previous != nullptr;
+    savedTimezone = previous ? previous : "";
+    clock.setTimezone("UTC0");
+  }
+  void TearDown() override {
+    if (hadTimezone)
+      setenv("TZ", savedTimezone.c_str(), 1);
+    else
+      unsetenv("TZ");
+    tzset();
+  }
 };
 
 TEST_F(HalClockTest, RestoresSystemUtcFromRtcOnBoot) {
@@ -50,18 +65,9 @@ TEST_F(HalClockTest, PreservesValidSystemTime) {
 }
 
 TEST_F(HalClockTest, RestorationIgnoresHostTimezone) {
-  const char* previous = std::getenv("TZ");
-  const bool hadTimezone = previous != nullptr;
-  const std::string saved = previous ? previous : "";
-  setenv("TZ", "EST5EDT", 1);
-  tzset();
+  clock.setTimezone("EST5EDT");
   clock.begin();
   EXPECT_EQ(fake.epoch, VALID_EPOCH);
-  if (hadTimezone)
-    setenv("TZ", saved.c_str(), 1);
-  else
-    unsetenv("TZ");
-  tzset();
 }
 
 TEST_F(HalClockTest, RejectsInvalidRtcFields) {
@@ -110,14 +116,17 @@ TEST_F(HalClockTest, FailedSystemClockWriteLeavesClockInvalid) {
 TEST_F(HalClockTest, NtpWorksWithoutRtc) {
   fake.rtcAvailable = false;
   clock.begin();
+  clock.setTimezone("JST-9");
   EXPECT_TRUE(clock.syncFromNTP());
   EXPECT_EQ(fake.epoch, VALID_EPOCH);
   EXPECT_EQ(fake.rtcWrites, 0U);
   EXPECT_EQ(fake.timezone, "UTC0");
+  EXPECT_STREQ(std::getenv("TZ"), "JST-9");
 }
 
 TEST_F(HalClockTest, NtpWritesRtcUtcAndUpdatesDisplayCache) {
   clock.begin();
+  clock.setTimezone("NPT-5:45");
   EXPECT_TRUE(clock.syncFromNTP());
   EXPECT_EQ(fake.rtcWrites, 1U);
   EXPECT_EQ(fake.written.year, 2024);
@@ -129,24 +138,29 @@ TEST_F(HalClockTest, NtpWritesRtcUtcAndUpdatesDisplayCache) {
   fake.rtcReadable = false;
   char formatted[9] = {};
   EXPECT_TRUE(clock.formatTime(formatted, sizeof(formatted)));
-  EXPECT_STREQ(formatted, "12:34");
+  EXPECT_STREQ(formatted, "18:19");
+  EXPECT_STREQ(std::getenv("TZ"), "NPT-5:45");
 }
 
 TEST_F(HalClockTest, RtcWriteFailureRemainsFailureDespiteValidSystemTime) {
   fake.rtcWritable = false;
   clock.begin();
+  clock.setTimezone("JST-9");
   EXPECT_FALSE(clock.syncFromNTP());
   EXPECT_EQ(fake.epoch, VALID_EPOCH);
   EXPECT_EQ(fake.rtcWrites, 1U);
+  EXPECT_STREQ(std::getenv("TZ"), "JST-9");
 }
 
 TEST_F(HalClockTest, IgnoresStaleSntpCompletion) {
   clock.begin();
+  clock.setTimezone("JST-9");
   fake.status = SNTP_SYNC_STATUS_COMPLETED;
   fake.replyAt = 6000;
   EXPECT_FALSE(clock.syncFromNTP());
   EXPECT_EQ(fake.milliseconds, 5000U);
   EXPECT_EQ(fake.rtcWrites, 0U);
+  EXPECT_STREQ(std::getenv("TZ"), "JST-9");
 }
 
 TEST_F(HalClockTest, InvalidNtpDateCannotOverwriteRtc) {
@@ -178,6 +192,8 @@ void delay(unsigned long milliseconds) {
 void configTzTime(const char* timezone, const char*, const char*, const char*) {
   ++fake.starts;
   fake.timezone = timezone;
+  setenv("TZ", timezone, 1);
+  tzset();
 }
 sntp_sync_status_t sntp_get_sync_status() { return fake.status; }
 void sntp_set_sync_status(sntp_sync_status_t status) { fake.status = status; }
