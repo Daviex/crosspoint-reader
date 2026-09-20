@@ -256,8 +256,10 @@ int EpubReaderActivity::bookPercentFor(const ChapterPosition& position) const {
   return static_cast<int>(std::clamp(fraction, 0.0f, 1.0f) * 100.0f + 0.5f);
 }
 
+void EpubReaderActivity::clearPageTurnInput() { pendingManualTurn.clear(); }
+
 void EpubReaderActivity::openReaderMenu() {
-  pendingManualTurn = 0;
+  clearPageTurnInput();
   if (usesToolbarMenu()) {
     // Reached from a child activity's result handler (footnotes, bookmarks,
     // go-to-percent... cancelled back to the menu), so the framebuffer holds
@@ -313,6 +315,7 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
 }
 
 void EpubReaderActivity::openDictionaryWordSelect() {
+  clearPageTurnInput();
   if (SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
     dictionaryMessageTime = millis();
@@ -349,8 +352,14 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  const bool manualInputPending = touch.prev || touch.next || pendingManualTurn.hasPending() ||
+                                  pendingManualTurn.awaitingRender() || mappedInput.wasAnyPressed() ||
+                                  mappedInput.wasAnyReleased() || gpio.wasTouchActivity() ||
+                                  mappedInput.homeButtonAction() != HomeButtonAction::Ignore;
+
   constexpr unsigned long IDLE_PREWARM_DEBOUNCE_MS = 400;
-  if (section && !section->isBuilding() && !RenderLock::peek() && renderer.hasFrameBuffer() &&
+  if (!manualInputPending && section && !section->isBuilding() && !RenderLock::peek() && renderer.hasFrameBuffer() &&
       lastRenderCompleteMs != 0 && millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS &&
       ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP && ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
       (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
@@ -374,8 +383,8 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  if (section && !section->isBuilding() && section->isPartial() && !RenderLock::peek() && buildViewportWidth > 0 &&
-      !partialRebuildStartFailed &&
+  if (!manualInputPending && section && !section->isBuilding() && section->isPartial() && !RenderLock::peek() &&
+      buildViewportWidth > 0 && !partialRebuildStartFailed &&
       section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
     RenderLock lock;
     const ReaderRenderSpec buildSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
@@ -388,7 +397,7 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  if (section && section->isBuilding() && !RenderLock::peek() &&
+  if (!manualInputPending && section && section->isBuilding() && !RenderLock::peek() &&
       (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
       buildTickHeapGate()) {
     RenderLock lock;
@@ -421,8 +430,6 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = false;
   }
 
-  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
-
   if (showBookmarkMessage && (millis() - bookmarkMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showBookmarkMessage = false;
     requestUpdate();
@@ -438,6 +445,7 @@ void EpubReaderActivity::loop() {
   // open, so the timer must neither flip the page under it nor eat the panel's next
   // Confirm/Back release.
   if (overlay != Overlay::None) {
+    clearPageTurnInput();
     if (usesToolbarMenu()) {
       // Hold the interval at zero elapsed so closing the panel starts a fresh one.
       lastPageTurnTime = millis();
@@ -484,6 +492,7 @@ void EpubReaderActivity::loop() {
     }
 
     if ((millis() - lastPageTurnTime) >= pageTurnDuration) {
+      clearPageTurnInput();
       pageTurn(true);
       requestUpdate();
       return;
@@ -496,6 +505,7 @@ void EpubReaderActivity::loop() {
   // dictionary word picker over it. Anything the menu does not handle (long-press Back to
   // the file browser, say) still falls through to the regular handlers.
   if (handleEndOfBookMenu()) {
+    clearPageTurnInput();
     return;
   }
   const bool endOfBookMenuOpen = endOfBookMenuActive();
@@ -507,6 +517,7 @@ void EpubReaderActivity::loop() {
                                   mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, confirmHoldMs);
   const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
   if (confirmLongPressed) {
+    clearPageTurnInput();
     switch (SETTINGS.longPressMenuFunction) {
       case CrossPointSettings::LP_MENU_BOOKMARK:
         addBookmark();
@@ -532,6 +543,7 @@ void EpubReaderActivity::loop() {
   if (!endOfBookMenuOpen) {
     switch (mappedInput.homeButtonAction()) {
       case HomeButtonAction::Bookmark:
+        clearPageTurnInput();
         if (!showBookmarkMessage) {
           addBookmark();
           showBookmarkMessage = true;
@@ -574,11 +586,11 @@ void EpubReaderActivity::loop() {
     // Toolbar style: the page is on screen and in the framebuffer, so paint the
     // toolbar over it (one refresh) instead of pushing a full-screen menu.
     if (usesToolbarMenu() && section) {
-      pendingManualTurn = 0;
       openOverlay(Overlay::Toolbar);
     } else {
       openReaderMenu();
     }
+    return;
   }
 
   if (footnoteDepth > 0 && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
@@ -588,6 +600,7 @@ void EpubReaderActivity::loop() {
   }
 
   if (handleBackNavigation()) {
+    clearPageTurnInput();
     return;
   }
 
@@ -595,6 +608,7 @@ void EpubReaderActivity::loop() {
       (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
        mappedInput.wasReleased(MappedInputManager::Button::Power) &&
        !mappedInput.wasReleased(MappedInputManager::Button::Down))) {
+    clearPageTurnInput();
     if (footnoteDepth > 0) {
       restoreSavedPosition();
     } else {
@@ -615,28 +629,15 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  constexpr unsigned long kMinManualTurnGapMs = 200;
-  const bool turnGuardActive = RenderLock::peek() || (millis() - lastPageTurnTime) < kMinManualTurnGapMs;
-  if (pendingManualTurn != 0 && !turnGuardActive) {
-    if (!section) {
-      pendingManualTurn = 0;
-      return;
-    }
-    const bool forward = pendingManualTurn > 0;
-    pendingManualTurn = 0;
-    pageTurn(forward);
-    requestUpdate();
-    return;
-  }
-
   auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
-  if (!prevTriggered && !nextTriggered) {
+  if (!prevTriggered && !nextTriggered && !pendingManualTurn.hasPending()) {
     return;
   }
 
-  if (handleEndOfBookPageTurn(prevTriggered, nextTriggered)) {
+  if ((prevTriggered || nextTriggered) && handleEndOfBookPageTurn(prevTriggered, nextTriggered)) {
+    clearPageTurnInput();
     return;
   }
 
@@ -646,14 +647,16 @@ void EpubReaderActivity::loop() {
   }
 
   const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
-  const bool longPress = !fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
+  const bool longPress = (prevTriggered || nextTriggered) && !fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
+    clearPageTurnInput();
     skipPages(nextTriggered ? 1 : -1);
     requestUpdate();
     return;
   }
 
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
+    clearPageTurnInput();
     const uint8_t newOrientation =
         nextTriggered ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
                       : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
@@ -662,22 +665,36 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // One outstanding turn: coalesce this tick's direction before idle draining.
+  if (prevTriggered || nextTriggered) pendingManualTurn.enqueue(prevTriggered ? -1 : 1);
   if (!section) {
-    requestUpdate();
+    if (!RenderLock::peek() && !pendingManualTurn.awaitingRender()) {
+      // A completed render without a section is a load failure, not work to
+      // retry forever. A new explicit gesture may request one fresh attempt.
+      clearPageTurnInput();
+      if (prevTriggered || nextTriggered) requestUpdate();
+    }
     return;
   }
 
-  if (turnGuardActive) {
-    pendingManualTurn = prevTriggered ? -1 : 1;
-    return;
-  }
-
-  if (prevTriggered) {
-    pageTurn(false);
-  } else {
-    pageTurn(true);
-  }
+  constexpr unsigned long kMinManualTurnGapMs = 200;
+  const bool ready = !RenderLock::peek() && millis() - lastPageTurnTime >= kMinManualTurnGapMs;
+  const int8_t direction = pendingManualTurn.take(ready);
+  if (direction == 0) return;
+  if (handleEndOfBookPageTurn(direction < 0, direction > 0)) return;
+  pageTurn(direction > 0);
   requestUpdate();
+}
+
+void EpubReaderActivity::requestUpdate(const bool immediate) {
+  pendingManualTurn.requestRender();
+  ReaderActivity::requestUpdate(immediate);
+}
+
+void EpubReaderActivity::render(RenderLock&& lock) {
+  const uint32_t ticket = pendingManualTurn.beginRender();
+  ReaderActivity::render(std::move(lock));
+  pendingManualTurn.endRender(ticket);
 }
 
 void EpubReaderActivity::jumpToPercent(int percent) {
@@ -945,6 +962,7 @@ unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
 }
 
 bool EpubReaderActivity::launchKOReaderSync() {
+  clearPageTurnInput();
   if (!KOREADER_STORE.hasCredentials()) return false;
 
   RenderLock renderLock;
@@ -997,6 +1015,7 @@ void EpubReaderActivity::applyInitialOrientation() {
 }
 
 void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
+  clearPageTurnInput();
   // Also runs when SETTINGS already holds the new value but this layout was
   // built for the old one — that is what an external change looks like here.
   if (SETTINGS.orientation == orientation && appliedOrientation == orientation) {
@@ -1021,6 +1040,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 }
 
 void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption) {
+  clearPageTurnInput();
   if (selectedPageTurnOption == 0 || selectedPageTurnOption >= std::size(PAGE_TURN_RATES)) {
     automaticPageTurnActive = false;
     return;
@@ -1044,18 +1064,15 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 }
 
 bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
+  RenderLock lock;
   if (!section) return false;
-  {
-    RenderLock lock;
-    clearDeferredReposition();
-  }
+  clearDeferredReposition();
   if (isForwardTurn) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
       lastPageTurnTime = millis();
       return true;
     } else if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
-      RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex++;
       section.reset();
@@ -1072,7 +1089,6 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       lastPageTurnTime = millis();
       return true;
     } else if (currentSpineIndex > 0) {
-      RenderLock lock;
       nextPageNumber = 0;
       pendingPageJump = std::numeric_limits<uint16_t>::max();
       currentSpineIndex--;
@@ -1930,6 +1946,7 @@ void EpubReaderActivity::settleOverlayRefresh() {
 }
 
 void EpubReaderActivity::openOverlay(Overlay target) {
+  clearPageTurnInput();
   mappedInput.resetHomeButtonInput();
   const Overlay previous = overlay;
   overlay = target;
@@ -2503,6 +2520,7 @@ void EpubReaderActivity::activateMoreRow(int row) {
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
+  clearPageTurnInput();
   if (!epub) return;
 
   if (savePosition && section && footnoteDepth < MAX_FOOTNOTE_DEPTH) {
@@ -2539,6 +2557,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
 }
 
 void EpubReaderActivity::restoreSavedPosition() {
+  clearPageTurnInput();
   if (footnoteDepth <= 0) return;
   footnoteDepth--;
   const auto& pos = savedPositions[footnoteDepth];
