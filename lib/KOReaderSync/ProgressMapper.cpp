@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <cmath>
@@ -738,9 +739,9 @@ class ParagraphStreamer final : public Print {
                     bool relaxFirstStep = false)
       : fwdTarget(SIZE_MAX),
         revChar(charOff),
+        targetTextNode(textNodeIdx),
         steps(xpathSteps),
         stepCount(xpathStepCount),
-        targetTextNode(textNodeIdx),
         relaxFirstStepDepth(relaxFirstStep) {
     memset(stepEnteredAtDepth, -1, sizeof(stepEnteredAtDepth));
   }
@@ -893,24 +894,27 @@ std::optional<CrossPointPosition> ProgressMapper::fromRichPosition(const std::sh
     return std::nullopt;
   }
 
-  CrossPointPosition result{};
-  result.spineIndex = rich.spineIndex;
-  result.hasResolvedSpineIndex = true;
-
   // The existing rich extension carries the same KOReader XPath as the standard
   // progress field. Resolve that content anchor first; remote page counts are
   // layout-dependent hints only. Skip it when the caller already resolved this exact
   // XPath -- re-streaming the same chapter for the same failure is pure waste.
   if (!xpathAlreadyTried && !rich.xpath.empty()) {
     SavedProgressPosition saved{rich.xpath, static_cast<float>(rich.pctQ) / 1000000.0f};
-    auto contentMapped = toCrossPoint(epub, saved, renderer);
+    const auto contentMapped = toCrossPoint(epub, saved, renderer);
     if (contentMapped.hasVisibleTextOffset) {
       return contentMapped;
     }
   }
 
-  Section tempSection(epub, result.spineIndex, renderer);
-  const auto cachedCount = tempSection.getCachedPageCount();
+  CrossPointPosition result{};
+  result.spineIndex = rich.spineIndex;
+  result.hasResolvedSpineIndex = true;
+  auto tempSection = makeUniqueNoThrow<Section>(epub, result.spineIndex, renderer);
+  if (!tempSection) {
+    LOG_ERR("PM", "OOM: temporary section (%zu bytes)", sizeof(Section));
+    return std::nullopt;
+  }
+  const auto cachedCount = tempSection->getCachedPageCount();
   if (!cachedCount || *cachedCount <= 0) {
     // No local layout for the target spine yet; the percentage/xpath mapping
     // handles density estimation better than a blind copy of remote pages.
@@ -930,7 +934,7 @@ std::optional<CrossPointPosition> ProgressMapper::fromRichPosition(const std::sh
 
   // Layout differs; the paragraph LUT is the most accurate anchor we have.
   if (rich.paragraphIndex.has_value()) {
-    const auto lutPage = tempSection.getPageForParagraphIndex(*rich.paragraphIndex);
+    const auto lutPage = tempSection->getPageForParagraphIndex(*rich.paragraphIndex);
     if (lutPage.has_value()) {
       result.paragraphIndex = *rich.paragraphIndex;
       result.hasParagraphIndex = true;
@@ -969,8 +973,9 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
   const int xpathTextNode = parseTextNodeIndex(koPos.xpath);
   const int xpathSpine = (docFrag >= 1) ? (docFrag - 1) : -1;
 
-  XPathStep xpathSteps[MAX_XPATH_DEPTH];
-  const int xpathStepCount = parseXPathSteps(koPos.xpath, xpathSteps);
+  auto xpathSteps = makeUniqueNoThrow<XPathStep[]>(MAX_XPATH_DEPTH);
+  if (!xpathSteps) LOG_ERR("PM", "OOM: XPath step workspace (%zu bytes)", sizeof(XPathStep) * MAX_XPATH_DEPTH);
+  const int xpathStepCount = xpathSteps ? parseXPathSteps(koPos.xpath, xpathSteps.get()) : 0;
   // Use ancestry mode whenever the XPath has a structured path (always more accurate than global counting).
   const bool useAncestry = xpathStepCount > 0;
   const bool useBodyText = !useAncestry && isBodyTextXPath(koPos.xpath);
@@ -978,13 +983,8 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
   if (xpathSpine >= 0 && xpathSpine < spineCount) {
     result.spineIndex = xpathSpine;
     result.hasResolvedSpineIndex = true;
-  } else {
-    for (int i = 0; i < spineCount; i++) {
-      if (epub->getCumulativeSpineItemSize(i) >= targetBytes) {
-        result.spineIndex = i;
-        break;
-      }
-    }
+  } else if (const int found = epub->getSpineIndexForSize(targetBytes); found >= 0) {
+    result.spineIndex = found;
   }
 
   const size_t prevCum = (result.spineIndex > 0) ? epub->getCumulativeSpineItemSize(result.spineIndex - 1) : 0;
@@ -1001,13 +1001,13 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
   }
 
   if (result.totalPages <= 0) {
-    Section tempSection(epub, result.spineIndex, renderer);
-    if (auto cachedCount = tempSection.getCachedPageCount()) {
-      result.totalPages = *cachedCount;
-    } else if (fallbackTotalPages > 0) {
-      result.totalPages = fallbackTotalPages;
-    } else {
-      result.totalPages = 1;  // Prevent division by zero and give a fallback
+    auto tempSection = makeUniqueNoThrow<Section>(epub, result.spineIndex, renderer);
+    if (!tempSection) LOG_ERR("PM", "OOM: page-count section (%zu bytes)", sizeof(Section));
+    if (tempSection) {
+      if (const auto cachedCount = tempSection->getCachedPageCount()) result.totalPages = *cachedCount;
+    }
+    if (result.totalPages <= 0) {
+      result.totalPages = fallbackTotalPages > 0 ? fallbackTotalPages : 1;
     }
   }
 
@@ -1031,7 +1031,9 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
       }
       const char* anchorId = s.getCapturedAnchorId();
       if (anchorId) {
-        strncpy(result.xpathAnchorId, anchorId, sizeof(result.xpathAnchorId) - 1);
+        const size_t anchorLength = std::min(strlen(anchorId), sizeof(result.xpathAnchorId) - 1);
+        memcpy(result.xpathAnchorId, anchorId, anchorLength);
+        result.xpathAnchorId[anchorLength] = '\0';
       }
       LOG_DBG("PM", "XPath ancestry(%s[%d])/text()[%d]+%d -> %.1f%% (target=%zu total=%zu p~%d li~%d anchor=%s)",
               xpathSteps[xpathStepCount - 1].tag, xpathSteps[xpathStepCount - 1].siblingIndex, xpathTextNode, xpathChar,
@@ -1039,34 +1041,40 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
               result.hasLiIndex ? static_cast<int>(result.liIndex) : 0, anchorId ? anchorId : "none");
     };
 
-    ParagraphStreamer strict(xpathSteps, xpathStepCount, xpathChar, xpathTextNode);
-    if (streamSpine(epub, result.spineIndex, strict) && strict.found()) {
-      applyResolvedXPath(strict);
+    auto strict = makeUniqueNoThrow<ParagraphStreamer>(xpathSteps.get(), xpathStepCount, xpathChar, xpathTextNode);
+    if (!strict) LOG_ERR("PM", "OOM: strict XPath streamer (%zu bytes)", sizeof(ParagraphStreamer));
+    if (strict && streamSpine(epub, result.spineIndex, *strict) && strict->found()) {
+      applyResolvedXPath(*strict);
     } else {
+      strict.reset();
       // Some KOReader producers omit an unindexed wrapper from the ancestry
       // (the compatibility case covered by PR #2777). Retry only after the
       // structurally exact path fails, allowing the first step at any body depth.
-      ParagraphStreamer relaxed(xpathSteps, xpathStepCount, xpathChar, xpathTextNode, true);
-      if (streamSpine(epub, result.spineIndex, relaxed) && relaxed.found()) {
-        applyResolvedXPath(relaxed);
+      auto relaxed =
+          makeUniqueNoThrow<ParagraphStreamer>(xpathSteps.get(), xpathStepCount, xpathChar, xpathTextNode, true);
+      if (!relaxed) LOG_ERR("PM", "OOM: relaxed XPath streamer (%zu bytes)", sizeof(ParagraphStreamer));
+      if (relaxed && streamSpine(epub, result.spineIndex, *relaxed) && relaxed->found()) {
+        applyResolvedXPath(*relaxed);
       }
     }
   } else if (useBodyText) {
-    ParagraphStreamer s(true, xpathChar, xpathTextNode);
-    if (streamSpine(epub, result.spineIndex, s) && s.found()) {
+    auto streamer = makeUniqueNoThrow<ParagraphStreamer>(true, xpathChar, xpathTextNode);
+    if (!streamer) LOG_ERR("PM", "OOM: body-text streamer (%zu bytes)", sizeof(ParagraphStreamer));
+    if (streamer && streamSpine(epub, result.spineIndex, *streamer) && streamer->found()) {
       result.visibleTextOffset =
-          static_cast<uint32_t>(std::min<size_t>(s.getTargetVisChars(), static_cast<size_t>(UINT32_MAX)));
+          static_cast<uint32_t>(std::min<size_t>(streamer->getTargetVisChars(), static_cast<size_t>(UINT32_MAX)));
       result.hasVisibleTextOffset = true;
       LOG_DBG("PM", "XPath body/text()[%d]+%d -> offset=%u", xpathTextNode, xpathChar, result.visibleTextOffset);
     }
   } else if (xpathP > 0) {
-    ParagraphStreamer s(xpathP, xpathChar, xpathTextNode);
-    if (streamSpine(epub, result.spineIndex, s) && s.found()) {
+    auto streamer = makeUniqueNoThrow<ParagraphStreamer>(xpathP, xpathChar, xpathTextNode);
+    if (!streamer) LOG_ERR("PM", "OOM: paragraph streamer (%zu bytes)", sizeof(ParagraphStreamer));
+    if (streamer && streamSpine(epub, result.spineIndex, *streamer) && streamer->found()) {
       result.visibleTextOffset =
-          static_cast<uint32_t>(std::min<size_t>(s.getTargetVisChars(), static_cast<size_t>(UINT32_MAX)));
+          static_cast<uint32_t>(std::min<size_t>(streamer->getTargetVisChars(), static_cast<size_t>(UINT32_MAX)));
       result.hasVisibleTextOffset = true;
       LOG_DBG("PM", "XPath p[%d]/text()[%d]+%d -> %.1f%% (target=%zu total=%zu)", xpathP, xpathTextNode, xpathChar,
-              s.progress() * 100, s.getTargetVisChars(), s.getTotalVisChars());
+              streamer->progress() * 100, streamer->getTargetVisChars(), streamer->getTotalVisChars());
     }
   }
   if (!result.hasVisibleTextOffset && xpathSpine >= 0 && xpathSpine < spineCount && isChapterStartXPath(koPos.xpath)) {
@@ -1077,10 +1085,13 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
     LOG_DBG("PM", "Chapter-start XPath %s -> spine=%d page start", koPos.xpath.c_str(), result.spineIndex);
   }
   if (result.hasVisibleTextOffset) {
-    Section tempSection(epub, result.spineIndex, renderer);
+    auto tempSection = makeUniqueNoThrow<Section>(epub, result.spineIndex, renderer);
+    if (!tempSection) LOG_ERR("PM", "OOM: visible-offset section (%zu bytes)", sizeof(Section));
     const bool imageAnchor = useAncestry && (strcasecmp(xpathSteps[xpathStepCount - 1].tag, "img") == 0 ||
                                              strcasecmp(xpathSteps[xpathStepCount - 1].tag, "image") == 0);
-    if (const auto offsetPage = tempSection.getPageForVisibleTextOffset(result.visibleTextOffset, imageAnchor)) {
+    std::optional<uint16_t> offsetPage;
+    if (tempSection) offsetPage = tempSection->getPageForVisibleTextOffset(result.visibleTextOffset, imageAnchor);
+    if (offsetPage) {
       result.pageNumber = *offsetPage;
       result.totalPages = std::max(result.totalPages, result.pageNumber + 1);
       result.hasMappedPage = true;
@@ -1105,10 +1116,14 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
 
   // Refine page using section cache LUTs: li index, anchor, or paragraph index.
   if (result.hasLiIndex || result.xpathAnchorId[0] != '\0' || result.hasParagraphIndex) {
-    Section tempSection(epub, result.spineIndex, renderer);
+    auto tempSection = makeUniqueNoThrow<Section>(epub, result.spineIndex, renderer);
+    if (!tempSection) {
+      LOG_ERR("PM", "OOM: position-refinement section (%zu bytes)", sizeof(Section));
+      return result;
+    }
     bool refined = false;
     if (result.hasLiIndex) {
-      const auto liPage = tempSection.getPageForListItemIndex(result.liIndex);
+      const auto liPage = tempSection->getPageForListItemIndex(result.liIndex);
       if (liPage.has_value()) {
         LOG_DBG("PM", "Li index %u -> page %d (was %d)", result.liIndex, *liPage, result.pageNumber);
         result.pageNumber = *liPage;
@@ -1119,7 +1134,7 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
       }
     }
     if (!refined && result.xpathAnchorId[0] != '\0') {
-      const auto anchorPage = tempSection.getPageForAnchor(std::string(result.xpathAnchorId));
+      const auto anchorPage = tempSection->getPageForAnchor(std::string(result.xpathAnchorId));
       if (anchorPage.has_value()) {
         LOG_DBG("PM", "Anchor '%s' -> page %d (was %d)", result.xpathAnchorId, *anchorPage, result.pageNumber);
         result.pageNumber = *anchorPage;
@@ -1130,8 +1145,8 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
       }
     }
     if (!refined && result.hasParagraphIndex) {
-      const auto paragraphPage = tempSection.getPageForParagraphIndex(result.paragraphIndex);
-      const auto nextParagraphPage = tempSection.getPageForParagraphIndex(result.paragraphIndex + 1);
+      const auto paragraphPage = tempSection->getPageForParagraphIndex(result.paragraphIndex);
+      const auto nextParagraphPage = tempSection->getPageForParagraphIndex(result.paragraphIndex + 1);
       if (paragraphPage.has_value()) {
         int refinedPage = std::max(result.pageNumber, static_cast<int>(*paragraphPage));
         if (nextParagraphPage.has_value()) {
@@ -1168,9 +1183,13 @@ std::string ProgressMapper::generateXPath(const std::shared_ptr<Epub>& epub, int
   const auto href = epub->getSpineItem(spineIndex).href;
   if (href.empty() || !epub->getItemSize(href, &spineSize) || spineSize == 0) return base;
 
-  ParagraphStreamer s(static_cast<size_t>(spineSize * std::min(intra, 1.0f)));
-  if (!streamSpine(epub, spineIndex, s)) return base;
+  auto streamer = makeUniqueNoThrow<ParagraphStreamer>(static_cast<size_t>(spineSize * std::min(intra, 1.0f)));
+  if (!streamer) {
+    LOG_ERR("PM", "OOM: fallback XPath streamer (%zu bytes)", sizeof(ParagraphStreamer));
+    return base;
+  }
+  if (!streamSpine(epub, spineIndex, *streamer)) return base;
 
-  const int p = s.paragraphCount();
+  const int p = streamer->paragraphCount();
   return (p > 0) ? base + "/p[" + std::to_string(p) + "]" : base;
 }

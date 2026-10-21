@@ -8,6 +8,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Utf8.h>
+#include <Xtc.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -23,7 +24,11 @@ constexpr char INDEX_PATH[] = "/.crosspoint/library.idx";
 constexpr char NEW_PATH[] = "/.crosspoint/library.new";
 constexpr char BACKUP_PATH[] = "/.crosspoint/library.bak";
 constexpr char STAGE_PATH[] = "/.crosspoint/library.stage";
+constexpr char DIRTY_PATH[] = "/.crosspoint/library.dirty";
 constexpr char CACHE_DIR[] = "/.crosspoint";
+// Sticky fallback when the marker could not be persisted (card unavailable at
+// write time): callers must still see the index as stale until a rebuild clears it.
+bool dirtyInMemory = false;
 constexpr size_t LIBRARY_IO_BUFFER_SIZE = 4096;
 
 // Matches lib/FileIndex's buffer so a name this walk accepts is one the file
@@ -174,14 +179,17 @@ bool installNewIndex() {
   return true;
 }
 
-bool isBookName(const std::string& name) {
-  return FsHelpers::checkFileExtension(name, ".epub") || FsHelpers::checkFileExtension(name, ".txt") ||
-         FsHelpers::checkFileExtension(name, ".md") || FsHelpers::checkFileExtension(name, ".xtc");
+void clearLibraryIndexDirty() {
+  dirtyInMemory = false;
+  if (Storage.exists(DIRTY_PATH) && !Storage.remove(DIRTY_PATH)) {
+    LOG_ERR("LIBIDX", "cannot clear dirty marker");
+  }
 }
 
 // macOS AppleDouble sidecars and hidden entries. The file browser already hides
 // these (FileBrowserActivity isMacOSMetadataEntry); the shelf must agree, or a
-// card written on a Mac shows every book twice.
+// card written on a Mac shows every book twice. isLibraryBookFile() applies the
+// same rule to whole paths.
 bool isHiddenOrSidecar(const char* name) { return name[0] == '.'; }
 
 std::string stemOf(const std::string& name) {
@@ -294,7 +302,8 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   entry.pathHash = clixPathHash(fullPath.data(), fullPath.size());
   const int priorIndex = findPrior(st, entry.pathHash);
 
-  const bool extractionExpected = st.readMetadata && FsHelpers::hasEpubExtension(name);
+  const bool isXtc = FsHelpers::hasXtcExtension(name);
+  const bool extractionExpected = st.readMetadata && (FsHelpers::hasEpubExtension(name) || isXtc);
   const uint8_t expectedStatus = extractionExpected ? CLIX_METADATA_EXTRACTED : CLIX_METADATA_NOT_ATTEMPTED;
   bool reuseMetadata = false;
   ClixRecord priorRecord{};
@@ -334,9 +343,22 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   // builds spine, TOC, CSS, cover, or section caches during the library walk.
   if (!reuseMetadata && extractionExpected) {
     st.stats->parsed++;
-    Epub epub(fullPath, CACHE_DIR);
     std::string bookTitle;
-    if (epub.loadMetadata(bookTitle, author)) {
+    bool loaded = false;
+    if (isXtc) {
+      // XTC/XTCH carry title and author in their own header block; load() reads that and the
+      // page table header, and writes no cache.
+      Xtc xtc(fullPath, CACHE_DIR);
+      loaded = xtc.load();
+      if (loaded) {
+        bookTitle = xtc.getTitle();
+        author = xtc.getAuthor();
+      }
+    } else {
+      Epub epub(fullPath, CACHE_DIR);
+      loaded = epub.loadMetadata(bookTitle, author);
+    }
+    if (loaded) {
       entry.record.metadataStatus = CLIX_METADATA_EXTRACTED;
       if (!bookTitle.empty()) {
         title = std::move(bookTitle);
@@ -361,7 +383,7 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
 
   // An absent author is a fact, not a gap to fill: the row joins the Unknown
   // group rather than borrowing a name from its surroundings.
-  const std::string folded = reuseMetadata ? std::string() : fold(title, true);
+  const std::string folded = reuseMetadata ? std::string() : fold(title);
   const std::string key = reuseMetadata ? std::string() : authorKey(author);
 
   entry.record.fileSize = fileSize;
@@ -476,7 +498,7 @@ void walk(WalkState& st, const std::string& path, const int depth) {
       }
       continue;
     }
-    if (!isBookName(name)) continue;
+    if (!isLibraryBookFile(name)) continue;
 
     // A zero-length book is a dangling directory entry: the name enumerates but
     // the contents do not exist. Counted rather than silently dropped.
@@ -1032,6 +1054,39 @@ bool emitIndex(const char* folderStagePath, WalkState& st, const uint16_t* order
 
 const char* libraryIndexPath() { return INDEX_PATH; }
 
+bool isLibraryBookFile(const std::string_view path) {
+  // The walk skips hidden (dot-prefixed) names, so it never lists a file inside
+  // a hidden folder. A lone "." names the folder itself.
+  size_t start = 0;
+  while (start < path.size()) {
+    const size_t slash = path.find('/', start);
+    const std::string_view name = path.substr(start, slash - start);
+    if (name.size() > 1 && name.front() == '.') return false;
+    if (slash == std::string_view::npos) break;
+    start = slash + 1;
+  }
+  return FsHelpers::checkFileExtension(path, ".epub") || FsHelpers::checkFileExtension(path, ".txt") ||
+         FsHelpers::checkFileExtension(path, ".md") || FsHelpers::hasXtcExtension(path);
+}
+
+bool markLibraryIndexDirty() {
+  if (Storage.exists(DIRTY_PATH)) return true;
+  if (!Storage.exists(CACHE_DIR) && !Storage.mkdir(CACHE_DIR)) {
+    LOG_ERR("LIBIDX", "cannot create cache directory for dirty marker");
+    dirtyInMemory = true;  // not persisted: stay dirty until the next rebuild
+    return true;
+  }
+  HalFile marker;
+  if (!Storage.openFileForWrite("LIBIDX", DIRTY_PATH, marker)) {
+    LOG_ERR("LIBIDX", "cannot create dirty marker");
+    dirtyInMemory = true;
+    return true;
+  }
+  return true;
+}
+
+bool isLibraryIndexDirty() { return dirtyInMemory || Storage.exists(DIRTY_PATH); }
+
 bool buildLibraryIndex(const char* rootPath, BuildStats& stats, const bool readMetadata) {
   const uint32_t startMs = millis();
   uint32_t serviceUnits = 0;
@@ -1160,6 +1215,7 @@ bool buildLibraryIndex(const char* rootPath, BuildStats& stats, const bool readM
     LOG_INF("LIBIDX", "unchanged: %u reused, %u parsed, no replacement, %ums",
             static_cast<unsigned>(stats.metadataReused), static_cast<unsigned>(stats.parsed),
             static_cast<unsigned>(stats.walkMs));
+    clearLibraryIndexDirty();
     return true;
   }
 
@@ -1342,6 +1398,7 @@ bool buildLibraryIndex(const char* rootPath, BuildStats& stats, const bool readM
           static_cast<unsigned>(stats.parsed), static_cast<unsigned>(stats.metadataReused),
           static_cast<unsigned>(stats.indexReplaced), static_cast<unsigned>(stats.duplicatesDropped),
           static_cast<unsigned>(stats.unreadableSkipped), static_cast<unsigned>(stats.walkMs));
+  if (ok) clearLibraryIndexDirty();
   return ok;
 }
 

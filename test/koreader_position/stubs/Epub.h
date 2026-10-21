@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,8 +17,12 @@ class Epub {
     std::string href;
   };
 
-  explicit Epub(std::vector<std::string> chapters, const size_t streamChunkSize = 0)
-      : chapters_(std::move(chapters)), streamChunkSize_(streamChunkSize) {}
+  explicit Epub(std::vector<std::string> chapters, const size_t streamChunkSize = 0,
+                const bool supportsEarlyStop = true, const size_t failAfterBytes = std::numeric_limits<size_t>::max())
+      : chapters_(std::move(chapters)),
+        streamChunkSize_(streamChunkSize),
+        supportsEarlyStop_(supportsEarlyStop),
+        failAfterBytes_(failAfterBytes) {}
 
   int getSpineItemsCount() const { return static_cast<int>(chapters_.size()); }
 
@@ -40,11 +45,15 @@ class Epub {
     const std::string& chapter = chapters_[spineIndex];
     const size_t chunkSize = streamChunkSize_ > 0 ? streamChunkSize_ : std::max<size_t>(requestedChunkSize, 1);
     for (size_t offset = 0; offset < chapter.size(); offset += chunkSize) {
+      if (offset >= failAfterBytes_) {
+        LOG_ERR("TEST", "Simulated source read failure");
+        return false;
+      }
       const size_t count = std::min(chunkSize, chapter.size() - offset);
       const size_t written = output.write(reinterpret_cast<const uint8_t*>(chapter.data() + offset), count);
       if (written != count) {
-        if (!allowEarlyStop) LOG_ERR("TEST", "Unexpected short write");
-        return allowEarlyStop;
+        if (!allowEarlyStop || !supportsEarlyStop_) LOG_ERR("TEST", "Unexpected short write");
+        return allowEarlyStop && supportsEarlyStop_;
       }
     }
     return true;
@@ -90,6 +99,13 @@ class Epub {
            static_cast<float>(total);
   }
 
+  int getSpineIndexForSize(const size_t targetBytes) const {
+    for (int i = 0; i < getSpineItemsCount(); ++i) {
+      if (getCumulativeSpineItemSize(i) >= targetBytes) return i;
+    }
+    return -1;
+  }
+
  private:
   int parseSpineIndex(const std::string& href) const {
     static constexpr char prefix[] = "chapter";
@@ -121,4 +137,6 @@ class Epub {
 
   std::vector<std::string> chapters_;
   size_t streamChunkSize_ = 0;
+  bool supportsEarlyStop_ = true;
+  size_t failAfterBytes_ = std::numeric_limits<size_t>::max();
 };

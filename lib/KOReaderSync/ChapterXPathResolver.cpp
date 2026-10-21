@@ -32,6 +32,15 @@ struct NameCounter {
   int count;
 };
 
+// Mirrors crengine's IsEmptySpace().
+bool isWhitespaceOnly(const XML_Char* data, const int len) {
+  for (int i = 0; i < len; i++) {
+    const char c = data[i];
+    if (c != ' ' && c != '\r' && c != '\n' && c != '\t') return false;
+  }
+  return true;
+}
+
 struct ParentState {
   std::vector<NameCounter> children;
 
@@ -129,7 +138,7 @@ class ParagraphTextCounter final : public Print {
     return size;
   }
 
-  size_t totalVisibleChars() const { return visibleChars; }
+  size_t totalVisibleChars() const { return lastTextEndChars; }
 
  private:
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char**) {
@@ -162,12 +171,6 @@ class ParagraphTextCounter final : public Print {
     if (nonVisibleDepth > 0 || VisibleTextUtils::isNonVisibleElement(name)) {
       nonVisibleDepth++;
     }
-    if (name == "p") {
-      paragraphDepth++;
-    }
-    if (name == "li") {
-      liDepth++;
-    }
     depth++;
   }
 
@@ -188,20 +191,19 @@ class ParagraphTextCounter final : public Print {
     if (nonVisibleDepth > 0) {
       nonVisibleDepth--;
     }
-    if (name == "p" && paragraphDepth > 0) {
-      paragraphDepth--;
-    }
-    if (name == "li" && liDepth > 0) {
-      liDepth--;
-    }
   }
 
   void onCharacterData(const XML_Char* data, const int len) {
-    if (!insideBody || nonVisibleDepth > 0 || (paragraphDepth <= 0 && liDepth <= 0) || len <= 0) {
+    if (!insideBody || nonVisibleDepth > 0 || len <= 0) {
       return;
     }
 
     visibleChars += countUtf8Codepoints(data, len);
+    if (!isWhitespaceOnly(data, len)) {
+      int trailing = 0;
+      while (trailing < len && isWhitespaceOnly(data + len - 1 - trailing, 1)) trailing++;
+      lastTextEndChars = visibleChars - static_cast<size_t>(trailing);
+    }
   }
 
  private:
@@ -211,10 +213,9 @@ class ParagraphTextCounter final : public Print {
   bool stopped = false;
   int depth = 0;
   int bodyDepth = -1;
-  int paragraphDepth = 0;
-  int liDepth = 0;
   uint16_t nonVisibleDepth = 0;
   size_t visibleChars = 0;
+  size_t lastTextEndChars = 0;
 };
 
 class XPathParagraphResolver final : public Print {
@@ -410,11 +411,8 @@ class XPathProgressResolver final : public Print {
   size_t write(uint8_t c) override { return write(&c, 1); }
 
   size_t write(const uint8_t* buffer, const size_t size) override {
-    if (!parser || !parseOk) {
+    if (!parser || !parseOk || stopped) {
       return size;
-    }
-    if (stopped) {
-      return boundaryMode == BoundaryMode::Exclusive ? 0 : size;
     }
 
     if (XML_Parse(parser, reinterpret_cast<const char*>(buffer), static_cast<int>(size), XML_FALSE) != XML_STATUS_OK) {
@@ -425,7 +423,7 @@ class XPathProgressResolver final : public Print {
       }
     }
 
-    return stopped && boundaryMode == BoundaryMode::Exclusive ? 0 : size;
+    return size;
   }
 
   int spineIndex = 0;
@@ -512,8 +510,6 @@ class XPathProgressResolver final : public Print {
     if (nonVisibleDepth > 0 || VisibleTextUtils::isNonVisibleElement(name)) {
       nonVisibleDepth++;
     }
-    if (name == "p") paragraphDepth++;
-    if (name == "li") liDepth++;
     depth++;
   }
 
@@ -536,8 +532,6 @@ class XPathProgressResolver final : public Print {
     if (nonVisibleDepth > 0) {
       nonVisibleDepth--;
     }
-    if (name == "p" && paragraphDepth > 0) paragraphDepth--;
-    if (name == "li" && liDepth > 0) liDepth--;
     if (!textNodeStates.empty()) {
       textNodeStates.pop_back();
     }
@@ -557,8 +551,6 @@ class XPathProgressResolver final : public Print {
       return;
     }
 
-    if (boundaryMode == BoundaryMode::Inclusive && paragraphDepth <= 0 && liDepth <= 0) return;
-
     const size_t codepointCount = countUtf8Codepoints(data, len);
     if (codepointCount == 0) {
       return;
@@ -574,15 +566,16 @@ class XPathProgressResolver final : public Print {
     const size_t nextVisibleChars = visibleChars + codepointCount;
     const bool targetInCurrentChunk = boundaryMode == BoundaryMode::Inclusive ? targetVisibleChar <= nextVisibleChars
                                                                               : targetVisibleChar < nextVisibleChars;
-    if (targetInCurrentChunk) {
-      const size_t delta = targetVisibleChar - visibleChars;
+    const bool whitespaceOnly = isWhitespaceOnly(data, len);
+    if (targetInCurrentChunk && !whitespaceOnly) {
+      const size_t delta = targetVisibleChar > visibleChars ? targetVisibleChar - visibleChars : 0;
       const size_t charOffset = visibleChars - textNode.startVisibleChars + delta;
       xpath = buildParagraphXPath(spineIndex, path, textNode.index, charOffset);
       stopped = true;
       XML_StopParser(parser, XML_FALSE);
       return;
     }
-    if (targetVisibleChar == nextVisibleChars) {
+    if (!whitespaceOnly && targetVisibleChar == nextVisibleChars) {
       // Prefer the beginning of the following text node at an element/chunk
       // boundary. Retain this end-of-node anchor only for the document end.
       boundaryXPath =
@@ -600,8 +593,6 @@ class XPathProgressResolver final : public Print {
   bool stopped = false;
   int depth = 0;
   int bodyDepth = -1;
-  int paragraphDepth = 0;
-  int liDepth = 0;
   size_t nonVisibleDepth = 0;
   size_t visibleChars = 0;
   std::vector<TextNodeState> textNodeStates;
@@ -655,8 +646,7 @@ std::string ChapterXPathResolver::findXPathForVisibleTextOffset(const std::share
     return "";
   }
 
-  // Keep the parser and its per-depth state off the reader task's small stack.
-  // One chapter is streamed once, stopping as soon as the target is resolved.
+  // Stop XML parsing at the target, but drain the source for strict TXT/protected sinks.
   auto resolver = makeUniqueNoThrow<XPathProgressResolver>(visibleTextOffset);
   if (!resolver) {
     LOG_ERR("KOX", "OOM: visible-offset XPath resolver");
@@ -667,7 +657,7 @@ std::string ChapterXPathResolver::findXPathForVisibleTextOffset(const std::share
   }
 
   resolver->spineIndex = spineIndex;
-  if (!epub->readItemContentsToStream(href, *resolver, 1024, true) || !resolver->finish()) {
+  if (!epub->readItemContentsToStream(href, *resolver, 1024) || !resolver->finish()) {
     return "";
   }
   return resolver->hasMatch() ? resolver->getXPath() : "";

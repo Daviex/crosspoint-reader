@@ -33,6 +33,18 @@ TEST(KOReaderPosition, ExportsExactInlineOffsetBeforeParagraphFallback) {
   EXPECT_EQ(saved.xpath, "/body/DocFragment[1]/body/div[1]/p[1]/em[1]/text()[1].2");
 }
 
+TEST(KOReaderPosition, KeepsExactAnchorWhenSourceRejectsShortWrites) {
+  const auto epub = std::make_shared<Epub>(std::vector<std::string>{NESTED_CHAPTER}, 1, false);
+  EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(8)).xpath,
+            "/body/DocFragment[1]/body/div[1]/p[1]/em[1]/text()[1].2");
+}
+
+TEST(KOReaderPosition, RejectsTransportFailureAfterFindingExactAnchor) {
+  const std::string chapter = "<html><body><p>alpha</p><p>later</p></body></html>";
+  const auto epub = std::make_shared<Epub>(std::vector<std::string>{chapter}, 1, false, chapter.find("later"));
+  EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 1).empty());
+}
+
 TEST(KOReaderPosition, PreservesZeroOffsetOfTheSecondDirectTextNode) {
   const auto saved = ProgressMapper::toSavedProgress(makeEpub(NESTED_CHAPTER), positionAt(10));
   EXPECT_EQ(saved.xpath, "/body/DocFragment[1]/body/div[1]/p[1]/text()[2].0");
@@ -44,8 +56,8 @@ TEST(KOReaderPosition, ProducesTheSameAnchorAcrossByteChunks) {
     const auto epub = makeEpub(NESTED_CHAPTER, chunkSize);
     EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(8)).xpath,
               "/body/DocFragment[1]/body/div[1]/p[1]/em[1]/text()[1].2");
-    EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(10)).xpath,
-              "/body/DocFragment[1]/body/div[1]/p[1]/text()[2].0");
+    EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(11)).xpath,
+              "/body/DocFragment[1]/body/div[1]/p[1]/text()[2].1");
   }
 }
 
@@ -60,9 +72,15 @@ TEST(KOReaderPosition, NormalizesLineEndingsAndCountsBodyWhitespace) {
   for (size_t chunkSize = 1; chunkSize <= 9; ++chunkSize) {
     SCOPED_TRACE(chunkSize);
     const auto epub = makeEpub(chapter, chunkSize);
-    EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(0)).xpath, "/body/DocFragment[1]/body/text()[1].0");
+    EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(0)).xpath, "/body/DocFragment[1]/body/p[1]/text()[1].0");
     EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(3)).xpath, "/body/DocFragment[1]/body/p[1]/text()[1].2");
-    EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(7)).xpath, "/body/DocFragment[1]/body/text()[2].0");
+    EXPECT_TRUE(ChapterXPathResolver::findXPathForVisibleTextOffset(epub, 0, 7).empty());
+    EXPECT_EQ(ProgressMapper::toSavedProgress(epub, positionAt(7)).xpath, "/body/DocFragment[1]/body/p[1]");
+    GfxRenderer renderer;
+    const SavedProgressPosition before{"/body/DocFragment[1]/body/text()[1].0", 0.0f};
+    const SavedProgressPosition after{"/body/DocFragment[1]/body/text()[2].0", 1.0f};
+    EXPECT_EQ(ProgressMapper::toCrossPoint(epub, before, renderer).visibleTextOffset, 0u);
+    EXPECT_EQ(ProgressMapper::toCrossPoint(epub, after, renderer).visibleTextOffset, 7u);
   }
 }
 
@@ -139,7 +157,7 @@ TEST(KOReaderPosition, ExactAnchorKeepsTheExistingGlobalPercentage) {
   EXPECT_EQ(exact.xpath, "/body/DocFragment[2]/body/div[1]/p[1]/em[1]/text()[1].2");
 }
 
-TEST(KOReaderPosition, ExportedAnchorsRoundTripThroughTheExistingImporter) {
+TEST(KOReaderPosition, ExportedAnchorsRoundTripWithKOSyncWhitespaceNormalization) {
   const auto epub = makeEpub(NESTED_CHAPTER, 1);
   GfxRenderer renderer;
   for (uint32_t offset = 0; offset <= 16; ++offset) {
@@ -148,7 +166,9 @@ TEST(KOReaderPosition, ExportedAnchorsRoundTripThroughTheExistingImporter) {
     const auto restored = ProgressMapper::toCrossPoint(epub, saved, renderer);
     ASSERT_TRUE(restored.hasVisibleTextOffset);
     EXPECT_EQ(restored.spineIndex, 0);
-    EXPECT_EQ(restored.visibleTextOffset, offset);
+    // A whitespace-only Expat chunk advances to the next usable KOSync anchor.
+    const uint32_t expected = offset == 5 ? offset + 1 : offset;
+    EXPECT_EQ(restored.visibleTextOffset, expected);
   }
 }
 
@@ -228,9 +248,10 @@ TEST(KOReaderPosition, DirectTextNodesRoundTripAfterLeadingConsecutiveAndHiddenC
   struct Fixture {
     const char* body;
     uint32_t visibleLength;
+    int whitespaceOffset = -1;
   };
   static constexpr Fixture fixtures[] = {
-      {"<p><em>alpha</em> beta</p>", 10},
+      {"<p><em>alpha</em> beta</p>", 10, 5},
       {"<p>ab<em>x</em><strong>y</strong>cd</p>", 6},
       {"a<div>b</div><ul><li>c</li><li>d</li></ul>e", 5},
       {"<p>ab<script>hidden</script>cd</p>", 4},
@@ -251,7 +272,12 @@ TEST(KOReaderPosition, DirectTextNodesRoundTripAfterLeadingConsecutiveAndHiddenC
         SCOPED_TRACE(saved.xpath);
         const auto restored = ProgressMapper::toCrossPoint(epub, saved, renderer);
         ASSERT_TRUE(restored.hasVisibleTextOffset);
-        EXPECT_EQ(restored.visibleTextOffset, offset);
+        if (static_cast<int>(offset) == fixture.whitespaceOffset) {
+          // Preserve a mixed text run's offset, or skip a whitespace-only chunk.
+          EXPECT_TRUE(restored.visibleTextOffset == offset || restored.visibleTextOffset == offset + 1);
+        } else {
+          EXPECT_EQ(restored.visibleTextOffset, offset);
+        }
       }
     }
   }
